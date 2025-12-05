@@ -1,0 +1,72 @@
+{
+  "name": "claude-devtools",
+  "version": "1.0.0",
+  "description": "Development quality gates and workflow generation skills for AI coding agents",
+  "author": "Vinayak Menon",
+  "repository": "https://github.com/vinayak/claude-devtools",
+  "skills": [
+    {
+      "name": "spec-creation",
+      "path": "skills/spec-creation/SKILL.md",
+      "description": "Create specification documents in ./specs/ for context retention across sessions"
+    },
+    {
+      "name": "testing-setup",
+      "path": "skills/testing-setup/SKILL.md",
+      "description": "Configure test frameworks for TypeScript, Python, or Kotlin projects"
+    },
+    {
+      "name": "testing-tdd",
+      "path": "skills/testing-tdd/SKILL.md",
+      "description": "Write and run tests following TDD practices"
+    },
+    {
+      "name": "linting-setup",
+      "path": "skills/linting-setup/SKILL.md",
+      "description": "Configure linting tools for code quality"
+    },
+    {
+      "name": "linting-check",
+      "path": "skills/linting-check/SKILL.md",
+      "description": "Run linting checks and fix issues"
+    },
+    {
+      "name": "security-setup",
+      "path": "skills/security-setup/SKILL.md",
+      "description": "Configure security scanning tools"
+    },
+    {
+      "name": "security-check",
+      "path": "skills/security-check/SKILL.md",
+      "description": "Run security scans and address findings"
+    },
+    {
+      "name": "feature-development",
+      "path": "skills/feature-development/SKILL.md",
+      "description": "Orchestrate full feature development with all quality gates"
+    },
+    {
+      "name": "pypi-publishing",
+      "path": "skills/pypi-publishing/SKILL.md",
+      "description": "Setup automated PyPI publishing with GitHub Actions"
+    },
+    {
+      "name": "npm-publishing",
+      "path": "skills/npm-publishing/SKILL.md",
+      "description": "Setup automated npm publishing with GitHub Actions"
+    }
+  ],
+  "categories": [
+    "development",
+    "testing",
+    "quality-assurance",
+    "ci-cd",
+    "workflow-automation"
+  ],
+  "languages": [
+    "typescript",
+    "javascript",
+    "python",
+    "kotlin"
+  ]
+}

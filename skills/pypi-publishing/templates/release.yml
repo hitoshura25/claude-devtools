@@ -1,0 +1,125 @@
+name: Release to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Type of version bump'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  calculate-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      new_version: ${{ steps.calc_version.outputs.new_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Make version script executable
+        run: chmod +x scripts/calculate_version.sh
+
+      - name: Calculate release version
+        id: calc_version
+        env:
+          RELEASE_TYPE: ${{ github.event.inputs.release_type }}
+        run: |
+          ./scripts/calculate_version.sh \
+            --type release \
+            --bump "$RELEASE_TYPE"
+
+      - name: Check if tag already exists remotely
+        env:
+          NEW_VERSION: ${{ steps.calc_version.outputs.new_version }}
+        run: |
+          if git ls-remote --tags origin | grep -q "refs/tags/$NEW_VERSION$"; then
+            echo "::error::Tag $NEW_VERSION already exists on remote!"
+            echo "::error::This may indicate a previous release attempt."
+            echo "::error::Please use a different version or delete the remote tag first."
+            exit 1
+          fi
+          echo "✅ Tag $NEW_VERSION does not exist remotely"
+
+  test-and-build:
+    needs: [calculate-version]
+    uses: ./.github/workflows/_reusable-test-build.yml
+    with:
+      python_version: '{{PYTHON_VERSION}}'
+      test_path: '{{TEST_PATH}}'
+      artifact_version: ${{ needs.calculate-version.outputs.new_version }}
+
+  publish-to-pypi:
+    name: Publish to PyPI
+    needs: [calculate-version, test-and-build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # For PyPI Trusted Publishing
+      contents: write  # For pushing tags and creating releases
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download all the dists
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: {{VERBOSE_PUBLISH}}
+
+      - name: Create and push tag
+        env:
+          NEW_VERSION: ${{ needs.calculate-version.outputs.new_version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
+          git push origin "$NEW_VERSION"
+
+          echo "✅ Created and pushed tag: $NEW_VERSION"
+
+      - name: Create GitHub Release
+        env:
+          NEW_VERSION: ${{ needs.calculate-version.outputs.new_version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$NEW_VERSION" \
+            --title "Release $NEW_VERSION" \
+            --generate-notes
+
+      - name: Summary
+        env:
+          NEW_VERSION: ${{ needs.calculate-version.outputs.new_version }}
+          RELEASE_TYPE: ${{ github.event.inputs.release_type }}
+        run: |
+          echo "### Release Published Successfully :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: $NEW_VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "**Type**: $RELEASE_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Steps completed**:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Tests passed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Package built" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Published to PyPI" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Tag pushed to repository" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ GitHub Release created" >> $GITHUB_STEP_SUMMARY
