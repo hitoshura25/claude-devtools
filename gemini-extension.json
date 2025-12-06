@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Development quality gates and workflow generation skills for AI coding agents",
   "author": "Vinayak Menon",
-  "repository": "https://github.com/vinayak/claude-devtools",
+  "repository": "https://github.com/hitoshura25/claude-devtools",
   "skills": [
     {
       "name": "spec-creation",

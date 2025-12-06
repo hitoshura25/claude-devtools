@@ -16,7 +16,7 @@ This repository provides Claude Code with systematic workflows for implementing 
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/vinayak/claude-devtools.git ~/.claude-devtools
+git clone https://github.com/hitoshura25/claude-devtools.git ~/.claude-devtools
 ```
 
 2. Run the installer:
@@ -108,6 +108,17 @@ These skills handle individual quality checks:
 
 - **`pypi-publishing`** - Setup automated PyPI publishing with GitHub Actions
 - **`npm-publishing`** - Setup automated npm publishing with GitHub Actions
+
+### Android Release & Publishing
+
+Comprehensive Android app release and Play Store deployment:
+
+- **`android-release-build-setup`** - Complete release build configuration (keystores, ProGuard, signing)
+- **`android-e2e-testing-setup`** - End-to-end testing with Espresso
+- **`android-release-validation`** - Validate release builds before publishing
+- **`android-playstore-setup`** - Google Play Console integration
+- **`android-playstore-publishing`** - GitHub Actions workflow for Play Store deployment
+- **`android-playstore-pipeline`** - Complete end-to-end setup in one command
 
 ## How It Works
 
@@ -284,6 +295,32 @@ Setup automated npm publishing workflow for TypeScript/JavaScript packages.
 - Monorepo support with path-based triggers
 - Automatic version bumping
 
+### `/devtools:android-release-setup`
+
+Setup complete Android release build configuration with dual keystore strategy.
+
+**Usage:**
+```
+/devtools:android-release-setup
+```
+
+**What it does:**
+- Analyzes Android project structure
+- Generates production keystore (CI/CD only)
+- Generates local development keystore
+- Configures ProGuard/R8 minification
+- Updates build.gradle.kts with signing config
+- Creates gradle.properties.template
+- Updates .gitignore for security
+
+**Features:**
+- Dual keystore strategy (production + local dev)
+- Auto-generated secure passwords
+- Base64 encoding for GitHub Secrets
+- ProGuard safe defaults with library-specific rules
+- Dual-source credentials (env vars + gradle.properties)
+- Comprehensive security warnings and documentation
+
 ## Configuration
 
 ### Project-Specific Commands
@@ -428,5 +465,5 @@ Vinayak Menon
 
 ## Links
 
-- **Repository**: https://github.com/vinayak/claude-devtools
-- **Issues**: https://github.com/vinayak/claude-devtools/issues
+- **Repository**: https://github.com/hitoshura25/claude-devtools
+- **Issues**: https://github.com/hitoshura25/claude-devtools/issues
