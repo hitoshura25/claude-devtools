@@ -61,6 +61,45 @@ None required - skill will detect project configuration and validate accordingly
 
 ## Step-by-Step Process
 
+## Prerequisites Check (MANDATORY - DO FIRST)
+
+### Device/Emulator Requirement
+
+⛔ **This skill REQUIRES a connected device or running emulator. It cannot be skipped.**
+
+Check for connected devices:
+```bash
+adb devices
+```
+
+**If output shows "List of devices attached" with no devices:**
+
+Option 1 - Start an emulator:
+```bash
+# List available AVDs
+emulator -list-avds
+
+# Start emulator in background
+emulator -avd <AVD_NAME> -no-snapshot-save &
+
+# Wait for device to be ready (may take 1-2 minutes)
+adb wait-for-device
+adb shell getprop sys.boot_completed  # Should return "1" when ready
+```
+
+Option 2 - Connect physical device:
+1. Enable Developer Options on device
+2. Enable USB Debugging
+3. Connect via USB
+4. Accept debugging prompt on device
+
+**DO NOT PROCEED until `adb devices` shows a connected device.**
+
+If user cannot provide a device/emulator:
+- ❌ STOP - Inform user this skill cannot complete
+- ❌ DO NOT skip validation steps
+- ❌ DO NOT mark skill as complete
+
 ### Step 1: Pre-Validation Checks
 
 Verify prerequisites are met:
@@ -151,16 +190,27 @@ Build release AAB for Play Store:
 Verify APK/AAB is properly signed:
 
 ```bash
-# Check APK signature
-jarsigner -verify -verbose -certs app/build/outputs/apk/release/app-release.apk
+# Verify APK signature (supports APK Signature Scheme v2/v3)
+$ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
+
+# Or if apksigner is in PATH:
+apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
 
 # Check AAB signature (extract first)
 unzip -p app/build/outputs/bundle/release/app-release.aab META-INF/MANIFEST.MF
 ```
 
+**Expected output for APK:**
+```
+Verifies
+Verified using v1 scheme (JAR signing): true
+Verified using v2 scheme (APK Signature Scheme v2): true
+Verified using v3 scheme (APK Signature Scheme v3): true
+```
+
 **Validations:**
 - APK/AAB is signed
-- Signature is valid
+- Signature is valid (v2/v3 schemes for APK)
 - Certificate matches expected keystore
 - Signature algorithm is secure (SHA256withRSA or better)
 
@@ -229,40 +279,85 @@ apkanalyzer apk summary app/build/outputs/apk/release/app-release.apk
 - Excessive permissions
 - targetSdk < 33 (Play Store requirement)
 
-### Step 8: Run E2E Tests on Release Build
+### Step 8: Run Smoke Tests on Release Build
 
-Execute instrumented tests on release APK:
+**This is the key validation step for ProGuard/R8.**
 
-```bash
-# Install release APK on device/emulator
-adb install -r app/build/outputs/apk/release/app-release.apk
+#### Option A: Using testBuildType (Recommended)
 
-# Run tests against release build
-./gradlew connectedReleaseAndroidTest
+Configure `app/build.gradle.kts` to test against release:
 
-# Alternative: Run specific critical tests only
-./gradlew connectedReleaseAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.class=com.example.app.ExampleInstrumentedTest
+```kotlin
+android {
+    testBuildType = "release"
+}
 ```
 
-**Why Critical:**
-ProGuard/R8 can break functionality by:
-- Removing classes used via reflection
-- Breaking serialization
-- Stripping required native methods
-- Removing classes referenced in XML
+Then run:
+```bash
+./gradlew connectedAndroidTest
+```
 
-**Validations:**
-- All tests pass on release build
-- No crashes during test execution
-- UI interactions work correctly
-- Navigation functions properly
+This:
+- Builds release APK (with ProGuard)
+- Builds test APK (signed with release key)
+- Installs both and runs tests
+- Both APKs have matching signatures ✓
 
-**If tests fail:**
-1. Check ProGuard rules
-2. Add keep rules for affected classes
+**Expected output:**
+```
+> Task :app:connectedReleaseAndroidTest
+Tests on Pixel_6_API_34 - 14
+
+SmokeTest > appLaunches_doesNotCrash PASSED
+SmokeTest > appLaunches_hasVisibleContent PASSED
+
+2 tests, 2 passed, 0 failed
+```
+
+#### Option B: Manual Installation (If testBuildType doesn't work)
+
+If you need to test a pre-built release APK:
+
+```bash
+# 1. Build release APK
+./gradlew assembleRelease
+
+# 2. Build release-signed test APK
+# First, temporarily set testBuildType = "release" in build.gradle.kts
+./gradlew assembleReleaseAndroidTest
+
+# 3. Install both APKs
+adb install app/build/outputs/apk/release/app-release.apk
+adb install app/build/outputs/apk/androidTest/release/app-release-androidTest.apk
+
+# 4. Run tests
+adb shell am instrument -w \
+  -e class {PACKAGE_NAME}.SmokeTest \
+  {PACKAGE_NAME}.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+#### If tests fail on release but pass on debug
+
+This indicates ProGuard removed something needed:
+
+1. Check logcat for the specific error:
+   ```bash
+   adb logcat -d | grep -E "ClassNotFoundException|NoSuchMethodError|NoSuchFieldError"
+   ```
+
+2. Add keep rules to `proguard-rules.pro`:
+   ```proguard
+   # Keep the class that was removed
+   -keep class com.example.MissingClass { *; }
+
+   # Keep classes used by reflection
+   -keepclassmembers class * {
+       @com.google.gson.annotations.SerializedName <fields>;
+   }
+   ```
+
 3. Rebuild and re-test
-4. Repeat until all tests pass
 
 ### Step 9: Test Installation and Basic Functionality
 
@@ -336,10 +431,14 @@ ls -lh app/build/outputs/apk/release/app-release.apk
 ls -lh app/build/outputs/mapping/release/mapping.txt
 
 # 3. REQUIRED: Verify signing
-jarsigner -verify -verbose -certs app/build/outputs/apk/release/app-release.apk
+apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
 
-# 4. REQUIRED: Run E2E tests on release build
-./gradlew connectedReleaseAndroidTest
+# 4. REQUIRED: Install release APK and run smoke tests
+adb uninstall {PACKAGE_NAME} || true
+adb install app/build/outputs/apk/release/app-release.apk
+./gradlew assembleDebugAndroidTest
+adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w -e class {PACKAGE_NAME}.SmokeTest {PACKAGE_NAME}.test/androidx.test.runner.AndroidJUnitRunner
 
 # 5. REQUIRED: Verify ProGuard mapping is not empty
 [ -s app/build/outputs/mapping/release/mapping.txt ] && echo "✓ Mapping file OK" || echo "✗ Mapping file empty"
@@ -349,8 +448,8 @@ jarsigner -verify -verbose -certs app/build/outputs/apk/release/app-release.apk
 - AAB exists: ✓
 - APK exists: ✓
 - Mapping exists and not empty: ✓
-- APK signed correctly: ✓ "jar verified"
-- E2E tests pass on release: ✓
+- APK signed correctly: ✓ "Verifies"
+- Smoke tests pass on release APK: ✓
 
 **If ANY fail:**
 1. DO NOT complete skill
@@ -625,14 +724,16 @@ Install Android SDK build-tools:
 sdkmanager "build-tools;34.0.0"
 ```
 
-### "jarsigner not found"
-Install JDK:
+### "apksigner not found"
+Install Android SDK build-tools:
 ```bash
-# macOS
-brew install openjdk@17
+# Via Android Studio SDK Manager
+# Or via command line
+sdkmanager "build-tools;34.0.0"
 
-# Ubuntu/Debian
-sudo apt install openjdk-17-jdk
+# Or add to PATH if already installed:
+export ANDROID_HOME=$HOME/Android/Sdk
+export PATH=$PATH:$ANDROID_HOME/build-tools/34.0.0
 ```
 
 ### "Tests pass on debug but fail on release"
@@ -680,13 +781,16 @@ Do NOT mark this skill as complete unless ALL of the following are verified:
   - [ ] Workflow runs on release branches
 
 ✅ **MANDATORY: Validation execution**
-  - [ ] `./gradlew bundleRelease` succeeds
-  - [ ] `./gradlew assembleRelease` succeeds
-  - [ ] AAB file exists: app/build/outputs/bundle/release/app-release.aab
-  - [ ] APK file exists: app/build/outputs/apk/release/app-release.apk
-  - [ ] Mapping file exists and not empty: app/build/outputs/mapping/release/mapping.txt
-  - [ ] `jarsigner -verify` confirms valid signature
-  - [ ] `./gradlew connectedReleaseAndroidTest` succeeds (E2E tests pass on release)
+  - [ ] Device/emulator connected (`adb devices` shows device)
+  - [ ] `testBuildType = "release"` configured in build.gradle.kts (for release validation)
+  - [ ] `./gradlew connectedAndroidTest` succeeds with release build
+  - [ ] Release APK is signed (`apksigner verify` passes)
+  - [ ] ProGuard mapping exists: `app/build/outputs/mapping/release/mapping.txt`
+  - [ ] App launches without crashing on release build
+  - [ ] Smoke tests pass
+
+**If no device available: FAIL. Do not skip.**
+**If signature mismatch error: Verify testBuildType = "release" is set.**
 
 ✅ **Validation report generated**
   - [ ] Report template exists

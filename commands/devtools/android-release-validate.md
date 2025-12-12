@@ -6,6 +6,11 @@ description: Validate Android release builds to ensure quality and catch ProGuar
 
 Validates release builds before publishing to catch ProGuard issues and ensure production readiness.
 
+## ⚠️ Device Required
+
+This command REQUIRES a connected device or running emulator.
+It will FAIL if no device is available - validation cannot be skipped.
+
 ## Skill Reference
 
 **Read and execute the skill at:**
@@ -17,17 +22,18 @@ Validates release builds before publishing to catch ProGuard issues and ensure p
 
 Do NOT mark complete unless ALL are verified:
 
-- [ ] `./gradlew assembleRelease` succeeds
-- [ ] `./gradlew connectedReleaseAndroidTest` passes
-- [ ] ProGuard mapping file exists: `app/build/outputs/mapping/release/mapping.txt`
-- [ ] `jarsigner -verify` confirms APK is signed
-- [ ] All E2E tests pass on release build (no ProGuard breakage)
+- [ ] Device connected (`adb devices` shows device)
+- [ ] Release APK built and signed
+- [ ] `apksigner verify` confirms valid signature
+- [ ] Release APK installed on device
+- [ ] Smoke tests pass against release APK (via `adb shell am instrument`)
+- [ ] ProGuard mapping file exists
 
 ## Quick Reference
 
 **Inputs:** Android project with release build and E2E tests configured
 **Outputs:** Validated release APK/AAB, ProGuard mapping, validation report
-**Verify:** `./gradlew connectedReleaseAndroidTest`
+**Verify:** `adb shell am instrument` with release APK
 
 ## Prerequisites
 

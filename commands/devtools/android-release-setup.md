@@ -22,7 +22,7 @@ Do NOT mark complete unless ALL are verified:
 - [ ] Mapping exists: `app/build/outputs/mapping/release/mapping.txt`
 - [ ] Keystores created in `keystores/` directory
 - [ ] `keystores/` is in `.gitignore`
-- [ ] `jarsigner -verify` confirms APK is signed
+- [ ] `apksigner verify` confirms APK is signed (v2/v3 schemes)
 
 ## Quick Reference
 

@@ -1,10 +1,10 @@
 ---
-description: Setup Espresso E2E testing for Android
+description: Setup UI Automator 2.4 E2E testing for Android
 ---
 
 # Android E2E Testing Setup
 
-Configures Espresso testing framework with sample tests and CI integration.
+Configures UI Automator 2.4 testing framework with modern API and smoke tests.
 
 ## Skill Reference
 
@@ -17,15 +17,16 @@ Configures Espresso testing framework with sample tests and CI integration.
 
 Do NOT mark complete unless ALL are verified:
 
-- [ ] Espresso dependencies in `app/build.gradle.kts`
-- [ ] `app/src/androidTest/` directory exists with test files
-- [ ] `./gradlew connectedDebugAndroidTest` executes (device required)
-- [ ] At least one test passes
+- [ ] UI Automator 2.4 dependency in `app/build.gradle.kts`
+- [ ] `SmokeTest.kt` exists using modern `uiAutomator { }` API
+- [ ] `./gradlew connectedDebugAndroidTest` passes
+- [ ] Device/emulator was used (tests cannot run without one)
+- [ ] HealthConnect permissions handled automatically by test
 
 ## Quick Reference
 
-**Inputs:** Android project, release build working
-**Outputs:** Espresso dependencies, test structure, sample tests
+**Inputs:** Android project
+**Outputs:** UI Automator 2.4 dependencies, SmokeTest.kt with modern API
 **Verify:** `./gradlew connectedDebugAndroidTest`
 
 ## Prerequisites

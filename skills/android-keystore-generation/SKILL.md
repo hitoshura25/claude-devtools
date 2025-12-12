@@ -33,6 +33,40 @@ Generates dual keystores for Android release signing: production (CI/CD only) an
 
 ## Process
 
+### Organization Name
+
+**ALWAYS prompt the user, but provide the auto-detected value as default.**
+
+**Step 1: Detect organization from package name**
+```bash
+# Extract package name from build.gradle.kts
+PACKAGE=$(grep "applicationId" app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
+echo "Package: $PACKAGE"
+
+# Extract second segment: com.{ORG}.app → ORG
+ORG=$(echo $PACKAGE | cut -d. -f2)
+echo "Detected organization: $ORG"
+```
+
+**Step 2: MANDATORY - Ask the user for confirmation**
+
+⛔ **DO NOT SKIP THIS PROMPT**
+
+Ask the user:
+> "The detected organization name is **{ORG}**.
+> Press Enter to use this, or type a different name:"
+
+Wait for user response. Use their input if provided, otherwise use the detected default.
+
+**Step 3: Store the confirmed organization name**
+```bash
+ORGANIZATION="{confirmed_org_name}"
+echo "Using organization: $ORGANIZATION"
+```
+
+**Why this matters:** The organization appears in the certificate's Distinguished Name.
+While it doesn't affect app functionality, users may want to customize it.
+
 ### Step 1: Create Keystores Directory
 
 ```bash
@@ -43,10 +77,24 @@ mkdir -p keystores
 
 **SECURITY:** This keystore is for CI/CD only. Never use locally.
 
-```bash
-# Generate secure password (PKCS12 requires same for store and key)
-PROD_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+**⚠️ IMPORTANT: Run each command in a SEPARATE bash call. Do NOT combine commands.**
 
+**Step 2a: Generate password and save to file**
+```bash
+openssl rand -base64 24 | tr -d '/+=' | head -c 24 > /tmp/prod_password.txt
+```
+
+**Step 2b: Read and display the password**
+```bash
+cat /tmp/prod_password.txt
+```
+📝 **Copy this password now** - you'll need it for the keytool command and KEYSTORE_INFO.txt
+
+**Step 2c: Generate the keystore**
+
+Replace `{PASSWORD}` with the password from Step 2b, and `{ORGANIZATION}` with the confirmed organization name:
+
+```bash
 keytool -genkeypair -v \
   -keystore keystores/production-release.jks \
   -storetype PKCS12 \
@@ -54,17 +102,43 @@ keytool -genkeypair -v \
   -keyalg RSA \
   -keysize 2048 \
   -validity 10000 \
-  -storepass "$PROD_PASSWORD" \
-  -keypass "$PROD_PASSWORD" \
-  -dname "CN=Android Release, OU=Release, O=${ORGANIZATION}, C=${COUNTRY_CODE}"
+  -storepass "{PASSWORD}" \
+  -keypass "{PASSWORD}" \
+  -dname "CN=Android Release, OU=Android, O={ORGANIZATION}, C=US"
+```
+
+**If keytool prompts for confirmation**, type `yes` and press Enter.
+
+**Step 2d: Verify keystore was created**
+```bash
+ls -la keystores/production-release.jks
+```
+
+**Expected output:**
+```
+-rw-------  1 user  staff  2557 Dec 11 10:30 keystores/production-release.jks
 ```
 
 ### Step 3: Generate Local Development Keystore
 
-```bash
-# Generate separate password for local keystore
-LOCAL_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+**⚠️ IMPORTANT: Run each command in a SEPARATE bash call. Do NOT combine commands.**
 
+**Step 3a: Generate password and save to file**
+```bash
+openssl rand -base64 24 | tr -d '/+=' | head -c 24 > /tmp/local_password.txt
+```
+
+**Step 3b: Read and display the password**
+```bash
+cat /tmp/local_password.txt
+```
+📝 **Copy this password now** - you'll need it for the keytool command and KEYSTORE_INFO.txt
+
+**Step 3c: Generate the keystore**
+
+Replace `{PASSWORD}` with the password from Step 3b:
+
+```bash
 keytool -genkeypair -v \
   -keystore keystores/local-dev-release.jks \
   -storetype PKCS12 \
@@ -72,9 +146,21 @@ keytool -genkeypair -v \
   -keyalg RSA \
   -keysize 2048 \
   -validity 10000 \
-  -storepass "$LOCAL_PASSWORD" \
-  -keypass "$LOCAL_PASSWORD" \
+  -storepass "{PASSWORD}" \
+  -keypass "{PASSWORD}" \
   -dname "CN=Local Development, OU=Development, O=Local, C=US"
+```
+
+**If keytool prompts for confirmation**, type `yes` and press Enter.
+
+**Step 3d: Verify keystore was created**
+```bash
+ls -la keystores/local-dev-release.jks
+```
+
+**Expected output:**
+```
+-rw-------  1 user  staff  2557 Dec 11 10:30 keystores/local-dev-release.jks
 ```
 
 ### Step 4: Create Credentials File

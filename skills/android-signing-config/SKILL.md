@@ -8,7 +8,6 @@ inputs:
   - keystores_created: Keystores must exist in keystores/ directory
 outputs:
   - Updated app/build.gradle.kts with signingConfigs
-  - gradle.properties.template
 verify: "./gradlew assembleRelease"
 ---
 
@@ -106,32 +105,7 @@ android {
 - Check if release `buildType` already has signingConfig - preserve other settings
 - Don't modify ProGuard settings (handled by separate skill)
 
-### Step 2: Create Template File
-
-Create `gradle.properties.template` in project root:
-
-```bash
-cat > gradle.properties.template << 'EOF'
-# Template for local development signing configuration
-# Copy this to gradle.properties (gitignored) and fill in values
-
-# Path to your LOCAL development keystore (NOT production!)
-SIGNING_KEY_STORE_PATH=/path/to/keystores/local-dev-release.jks
-
-# Local development keystore credentials
-SIGNING_KEY_ALIAS=local-dev
-SIGNING_STORE_PASSWORD=your-local-dev-password
-SIGNING_KEY_PASSWORD=your-local-dev-password
-
-# IMPORTANT SECURITY NOTES:
-# 1. This is for LOCAL testing of release builds ONLY
-# 2. NEVER use production keystore locally
-# 3. Production keystore lives ONLY in CI/CD (GitHub Secrets)
-# 4. Each developer should have their own unique local keystore
-EOF
-```
-
-### Step 3: Update .gitignore
+### Step 2: Update .gitignore
 
 Ensure sensitive files are gitignored:
 
@@ -140,7 +114,7 @@ Ensure sensitive files are gitignored:
 grep -q "gradle.properties" .gitignore 2>/dev/null || echo -e "\n# Gradle properties with secrets\ngradle.properties" >> .gitignore
 ```
 
-### Step 4: Configure Local Development
+### Step 3: Configure Local Development
 
 Ask user permission to update `~/.gradle/gradle.properties`:
 
@@ -173,21 +147,23 @@ EOF
 # Verify APK exists
 ls -lh app/build/outputs/apk/release/app-release.apk
 
-# Verify APK is signed
-jarsigner -verify -verbose -certs app/build/outputs/apk/release/app-release.apk
+# Verify APK signature (supports APK Signature Scheme v2/v3)
+$ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
+
+# Or if apksigner is in PATH:
+apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
 ```
 
 **Expected output:**
 - Release build succeeds
 - APK file exists
-- `jarsigner` shows "jar verified"
+- `apksigner` shows "Verifies" with v2/v3 scheme confirmation
 
 ## Outputs
 
 | Output | Location | Description |
 |--------|----------|-------------|
 | Signing config | app/build.gradle.kts | Dual-source signing configuration |
-| Template | gradle.properties.template | Template for local setup |
 | Local config | ~/.gradle/gradle.properties | Local dev credentials |
 
 ## Troubleshooting
@@ -200,7 +176,7 @@ jarsigner -verify -verbose -certs app/build/outputs/apk/release/app-release.apk
 **Cause:** Path in gradle.properties is incorrect
 **Fix:** Use absolute path: `/full/path/to/keystores/local-dev-release.jks`
 
-### "jarsigner verification fails"
+### "apksigner verification fails"
 **Cause:** Wrong keystore or passwords
 **Fix:** Double-check credentials in KEYSTORE_INFO.txt
 
@@ -208,7 +184,6 @@ jarsigner -verify -verbose -certs app/build/outputs/apk/release/app-release.apk
 
 - [ ] `signingConfigs.release` exists in app/build.gradle.kts
 - [ ] Release buildType uses signingConfig
-- [ ] `gradle.properties.template` created
 - [ ] `~/.gradle/gradle.properties` configured (or env vars set for CI)
 - [ ] `./gradlew assembleRelease` succeeds
-- [ ] `jarsigner -verify` confirms APK is signed
+- [ ] `apksigner verify` confirms APK is signed (v2/v3 schemes)
