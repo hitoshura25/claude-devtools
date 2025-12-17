@@ -1,0 +1,82 @@
+name: Publish {{NPM_PACKAGE_NAME}}
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '{{PACKAGE_DIR}}/**'
+  pull_request:
+    paths:
+      - '{{PACKAGE_DIR}}/**'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Use Node.js {{NODE_VERSION}}
+        uses: actions/setup-node@v4
+        with:
+          node-version: {{NODE_VERSION}}
+          registry-url: {{NPM_REGISTRY_URL}}
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        id: yarn-cache
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install dependencies and build
+        run: {{BUILD_COMMAND}}
+        working-directory: {{PACKAGE_DIR}}
+
+      - name: Bump version and publish to NPM
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: {{PACKAGE_DIR}}
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          npm version patch -m "chore(release): {{GIT_TAG_PREFIX}}%s"
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create Git Tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          cd {{PACKAGE_DIR}}
+          VERSION=$(node -p "require('./package.json').version")
+          git tag {{GIT_TAG_PREFIX}}${VERSION}
+          git push --tags
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd {{PACKAGE_DIR}}
+          VERSION=$(node -p "require('./package.json').version")
+          TAG_NAME="{{GIT_TAG_PREFIX}}${VERSION}"
+          gh release create "$TAG_NAME" \
+            --title "Release {{NPM_PACKAGE_NAME}}@${VERSION}" \
+            --notes "New release for {{NPM_PACKAGE_NAME}}"
+
+      - name: Publish RC to NPM
+        if: github.event_name == 'pull_request'
+        working-directory: {{PACKAGE_DIR}}
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          npm version prerelease --preid=rc.$(git rev-parse --short HEAD) --no-git-tag-version
+          npm publish --tag rc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
