@@ -1,10 +1,10 @@
 ---
-description: Setup Google Play Console integration for automated Android app deployment
+description: Complete Play Store setup - orchestrates scanning, privacy policy, version management, and workflows (Internal track)
 ---
 
 # Android Play Store Setup
 
-Configures Google Play Console integration: service account, API access, release notes structure, and validation.
+Orchestrates complete Google Play Store deployment setup with automated publishing to the **internal testing track**.
 
 ## Skill Reference
 
@@ -17,18 +17,41 @@ Configures Google Play Console integration: service account, API access, release
 
 Do NOT mark complete unless ALL are verified:
 
-- [ ] Service account created in Google Cloud
-- [ ] Service account JSON downloaded and stored securely
-- [ ] Play Developer API enabled
-- [ ] Service account linked to Play Console with "Release" permission
-- [ ] Release notes directory structure created: `distribution/whatsnew/`
-- [ ] Validation script passes: `python scripts/validate-playstore.py`
+**Project Files:**
+- [ ] GPP plugin configured in `app/build.gradle.kts`
+- [ ] Version scripts in `scripts/` directory
+- [ ] Privacy policy in `docs/privacy-policy.md`
+- [ ] Release notes in `src/main/play/release-notes/`
+- [ ] Workflows: `.github/workflows/build.yml` and `release-internal.yml`
+
+**GitHub Secrets:**
+- [ ] `SERVICE_ACCOUNT_JSON_PLAINTEXT` configured
+- [ ] `SIGNING_KEY_STORE_BASE64` configured
+- [ ] `SIGNING_KEY_ALIAS` configured
+- [ ] `SIGNING_STORE_PASSWORD` configured
+- [ ] `SIGNING_KEY_PASSWORD` configured
+
+**Play Console:**
+- [ ] First manual upload completed
+- [ ] Internal testing track active
 
 ## Quick Reference
 
 **Inputs:** Google Play Developer account, package name, Play Console admin access
-**Outputs:** Service account, release notes structure, GitHub Secrets guide, validation script
-**Verify:** `python scripts/validate-playstore.py service-account.json com.example.app`
+**Outputs:** Privacy policy, version scripts, signing config, GitHub workflows
+**Verify:** `./gradlew assembleRelease && ./scripts/version-manager.sh latest`
+
+## What This Orchestrates
+
+1. **Scan Project** → `PLAY_CONSOLE_SETUP.md`
+2. **Privacy Policy** → `docs/privacy-policy.md`
+3. **Version Management** → `scripts/version-manager.sh`, `version.properties`
+4. **Keystores** → `keystores/` directory
+5. **Signing Config** → `app/build.gradle.kts`
+6. **ProGuard** → `app/proguard-rules.pro`
+7. **Workflows** → `build.yml` + `release-internal.yml`
+8. **Service Account** → Setup guide
+9. **API Validation** → `scripts/validate-playstore.py`
 
 ## Prerequisites
 
@@ -37,8 +60,20 @@ Do NOT mark complete unless ALL are verified:
 - Admin access to Play Console
 - Package name reserved in Play Console
 
+## How to Release
+
+After setup is complete:
+
+1. Go to **Actions** → **Release to Internal Track**
+2. Click **Run workflow**
+3. Select version bump type (patch/minor/major)
+4. Click **Run workflow**
+
 ## Related Commands
 
-- `/devtools:android-release-setup` - Required before this
-- `/devtools:android-playstore-publish` - Run after this
-- `/devtools:android-playstore-pipeline` - Complete pipeline setup
+- `/devtools:android-playstore-scan` - Scan only (no modifications)
+- `/devtools:privacy-policy` - Generate privacy policy only
+- `/devtools:version-management` - Setup versioning only
+- `/devtools:android-release-setup` - Signing and release build setup
+- `/devtools:android-workflow-beta` - Add beta track workflow
+- `/devtools:android-workflow-production` - Add production track workflow

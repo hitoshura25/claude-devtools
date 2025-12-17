@@ -67,6 +67,47 @@ echo "Using organization: $ORGANIZATION"
 **Why this matters:** The organization appears in the certificate's Distinguished Name.
 While it doesn't affect app functionality, users may want to customize it.
 
+### Password Generation Options
+
+**Choose one option for keystore passwords:**
+
+#### Option 1 (Recommended): User-Provided Password
+
+Ask the user to provide a password for the production keystore:
+
+> "Please enter a password for the production keystore (minimum 12 characters, mix of letters, numbers, and symbols):"
+
+**Security benefits:**
+- Password never visible to the agent during the conversation
+- User has complete control over password strength and storage
+- Reduces risk of password exposure in logs or conversation history
+
+**Instructions for user:**
+```bash
+# User will run keytool command manually with their chosen password
+# Example:
+keytool -genkeypair -v \
+  -keystore keystores/production-release.jks \
+  -storetype PKCS12 \
+  -alias upload \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000 \
+  -storepass "YOUR_PASSWORD_HERE" \
+  -keypass "YOUR_PASSWORD_HERE" \
+  -dname "CN=Android Release, OU=Android, O={ORGANIZATION}, C=US"
+```
+
+#### Option 2: Generated Password
+
+If the user prefers a generated password, use the automated generation steps below.
+
+**Note:** The agent will have access to this password during the session. The password will be stored in temporary files and KEYSTORE_INFO.txt.
+
+> "Would you like me to generate a secure password? (The agent will see this password during generation)"
+
+If yes, proceed with the automated generation steps.
+
 ### Step 1: Create Keystores Directory
 
 ```bash

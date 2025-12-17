@@ -16,9 +16,9 @@ Navigate to: **Your Repository → Settings → Secrets and variables → Action
 
 ---
 
-### 1. SERVICE_ACCOUNT_JSON
+### 1. SERVICE_ACCOUNT_JSON_PLAINTEXT
 
-**What it is:** Complete contents of the Google Cloud service account JSON file
+**What it is:** Complete plaintext contents of the Google Cloud service account JSON file (not base64 encoded)
 
 **How to get the value:**
 
@@ -34,8 +34,8 @@ Navigate to: **Your Repository → Settings → Secrets and variables → Action
    - Should be ~2,400 characters
 
 4. In GitHub:
-   - Name: `SERVICE_ACCOUNT_JSON`
-   - Value: Paste the copied JSON
+   - Name: `SERVICE_ACCOUNT_JSON_PLAINTEXT`
+   - Value: Paste the copied JSON (plaintext, not base64 encoded)
 
 **Example format (DO NOT use this, use your actual file):**
 ```json
@@ -194,7 +194,7 @@ After adding all secrets:
 
 - [ ] All 5 secrets are listed in repository settings
 - [ ] No typos in secret names (they're case-sensitive!)
-- [ ] SERVICE_ACCOUNT_JSON is valid JSON
+- [ ] SERVICE_ACCOUNT_JSON_PLAINTEXT is valid JSON
 - [ ] SIGNING_KEY_STORE_BASE64 has no line breaks
 - [ ] Aliases and passwords match your keystore
 - [ ] Test deployment workflow to verify
@@ -217,9 +217,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Test SERVICE_ACCOUNT_JSON
+      - name: Test SERVICE_ACCOUNT_JSON_PLAINTEXT
         run: |
-          echo "${{ secrets.SERVICE_ACCOUNT_JSON }}" | jq -r '.client_email'
+          echo "${{ secrets.SERVICE_ACCOUNT_JSON_PLAINTEXT }}" | jq -r '.client_email'
           # Should output: playstore-deploy@your-project.iam.gserviceaccount.com
       
       - name: Test Keystore Decode
@@ -241,7 +241,7 @@ jobs:
 
 ## Common Issues
 
-### "Invalid service account JSON"
+### "Invalid service account JSON (SERVICE_ACCOUNT_JSON_PLAINTEXT)"
 
 **Symptom:** Deployment fails with authentication error
 

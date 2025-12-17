@@ -141,9 +141,9 @@ Add these secrets to your GitHub repository for automated deployment.
 
 Go to: Repository → Settings → Secrets and variables → Actions → New repository secret
 
-### 1. SERVICE_ACCOUNT_JSON
+### 1. SERVICE_ACCOUNT_JSON_PLAINTEXT
 
-**Value:** Entire contents of the JSON file downloaded in service account setup
+**Value:** Entire plaintext contents of the JSON file downloaded in service account setup (not base64 encoded)
 
 **How to add:**
 1. Open the service account JSON file
@@ -185,7 +185,7 @@ After adding secrets:
 ## Security Notes
 
 - Never log secret values
-- Rotate SERVICE_ACCOUNT_JSON annually
+- Rotate SERVICE_ACCOUNT_JSON_PLAINTEXT annually
 - Keep KEYSTORE_INFO.txt secure (not in git)
 - Use environment protection for production deployments
 ```

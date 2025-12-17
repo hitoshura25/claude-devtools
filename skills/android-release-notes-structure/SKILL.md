@@ -1,14 +1,14 @@
 ---
 name: android-release-notes-structure
-description: Create Play Store release notes directory structure with locale templates
+description: Create Play Store release notes directory structure with locale templates (Fastlane metadata)
 category: android
-version: 1.0.0
+version: 3.0.0
 inputs:
   - locales: List of locales to support (default: en-US)
 outputs:
-  - distribution/whatsnew/ directory structure
-  - distribution/TRACKS.md
-verify: "test -d distribution/whatsnew/en-US"
+  - fastlane/metadata/android/{locale}/changelogs/ directory structure
+  - docs/PLAY_STORE_TRACKS.md
+verify: "test -f fastlane/metadata/android/en-US/changelogs/default.txt"
 ---
 
 # Android Release Notes Structure
@@ -30,25 +30,25 @@ Creates directory structure for Play Store release notes with multi-locale suppo
 ### Step 1: Create Release Notes Directory Structure
 
 ```bash
-# Create base directory
-mkdir -p distribution/whatsnew
+# Create base directory (Fastlane metadata standard structure)
+mkdir -p fastlane/metadata/android
 
 # Ask user which locales to support
 # Default: en-US
 # Common: en-US, de-DE, es-ES, fr-FR, it-IT, ja-JP, ko-KR, pt-BR, zh-CN, zh-TW
 
-# Create directories for each locale
+# Create changelogs directories for each locale
 for locale in ${LOCALES}; do
-  mkdir -p "distribution/whatsnew/${locale}"
+  mkdir -p "fastlane/metadata/android/${locale}/changelogs"
 done
 ```
 
-### Step 2: Create Template Whatsnew Files
+### Step 2: Create Template Release Note Files
 
-For each locale, create `distribution/whatsnew/${LOCALE}/whatsnew`:
+For each locale, create `fastlane/metadata/android/${LOCALE}/changelogs/default.txt`:
 
 ```bash
-cat > distribution/whatsnew/en-US/whatsnew << 'EOF'
+cat > fastlane/metadata/android/en-US/changelogs/default.txt << 'EOF'
 - New: [Feature name]
 - Improved: [Enhancement description]
 - Fixed: [Bug fix description]
@@ -59,31 +59,34 @@ EOF
 
 ### Step 3: Create Release Notes README
 
-Create `distribution/whatsnew/README.md`:
+Create `fastlane/metadata/android/README.md`:
 
 ```markdown
 # Play Store Release Notes
 
-This directory contains release notes for Google Play Store deployments.
+This directory contains release notes for Google Play Store deployments using Fastlane.
 
 ## Structure
 
-Each locale has its own directory with a `whatsnew` file (no extension):
+Each locale has its own changelogs directory with a `default.txt` file:
 
 ```
-whatsnew/
+metadata/android/
 ├── en-US/
-│   └── whatsnew
+│   └── changelogs/
+│       └── default.txt
 ├── de-DE/
-│   └── whatsnew
+│   └── changelogs/
+│       └── default.txt
 └── [other locales]/
-    └── whatsnew
+    └── changelogs/
+        └── default.txt
 ```
 
 ## Format Guidelines
 
 **File Requirements:**
-- File name: `whatsnew` (no extension)
+- File name: `default.txt`
 - Encoding: UTF-8
 - Maximum: 500 characters
 - Plain text only (no markdown/HTML)
@@ -118,8 +121,8 @@ whatsnew/
 Current locales: ${LOCALES}
 
 To add a locale:
-1. Create directory: `mkdir -p whatsnew/LOCALE-CODE`
-2. Create file: `touch whatsnew/LOCALE-CODE/whatsnew`
+1. Create directory: `mkdir -p fastlane/metadata/android/LOCALE-CODE/changelogs`
+2. Create file: `echo "Release notes" > fastlane/metadata/android/LOCALE-CODE/changelogs/default.txt`
 3. Add translated release notes
 
 ## Common Locales
@@ -135,18 +138,38 @@ To add a locale:
 - zh-CN: Chinese (Simplified)
 - zh-TW: Chinese (Traditional)
 
+## Automation with Fastlane
+
+Release notes are automatically included by Fastlane during deployment:
+
+```ruby
+# In fastlane/Fastfile
+lane :deploy_internal do
+  # Fastlane automatically looks for changelogs in fastlane/metadata/android/{locale}/changelogs/
+  upload_to_play_store(
+    track: "internal",
+    aab: "app/build/outputs/bundle/release/app-release.aab"
+  )
+end
+```
+
+Deployment command:
+```bash
+bundle exec fastlane deploy_internal
+```
+
 ## Updating Release Notes
 
 Before each release:
-1. Update `whatsnew` files for all locales
+1. Update `default.txt` files for all locales
 2. Keep under 500 characters
 3. Verify UTF-8 encoding
-4. Test locally: `wc -m whatsnew/en-US/whatsnew`
+4. Test locally: `wc -m fastlane/metadata/android/en-US/changelogs/default.txt`
 ```
 
 ### Step 4: Create Tracks Documentation
 
-Create `distribution/TRACKS.md`:
+Create `docs/PLAY_STORE_TRACKS.md`:
 
 ```markdown
 # Google Play Store Release Tracks
@@ -273,22 +296,22 @@ If issues detected:
 
 ```bash
 # Verify directory structure
-test -d distribution/whatsnew/en-US && echo "✓ Release notes structure created"
+test -d fastlane/metadata/android/en-US/changelogs && echo "✓ Release notes structure created"
 
-# Verify whatsnew files exist
-ls distribution/whatsnew/*/whatsnew && echo "✓ Whatsnew files created"
+# Verify default.txt files exist
+ls fastlane/metadata/android/*/changelogs/default.txt && echo "✓ Release note files created"
 
 # Verify documentation
-test -f distribution/whatsnew/README.md && echo "✓ README created"
-test -f distribution/TRACKS.md && echo "✓ TRACKS guide created"
+test -f fastlane/metadata/android/README.md && echo "✓ README created"
+test -f docs/PLAY_STORE_TRACKS.md && echo "✓ TRACKS guide created"
 
 # Check character count (should be < 500)
-wc -m distribution/whatsnew/en-US/whatsnew
+wc -m fastlane/metadata/android/en-US/changelogs/default.txt
 ```
 
 **Expected output:**
 - ✓ Release notes structure created
-- ✓ Whatsnew files created
+- ✓ Release note files created
 - ✓ README created
 - ✓ TRACKS guide created
 - Character count < 500
@@ -297,24 +320,24 @@ wc -m distribution/whatsnew/en-US/whatsnew
 
 | Output | Location | Description |
 |--------|----------|-------------|
-| Release notes | distribution/whatsnew/${LOCALE}/ | Per-locale release notes |
-| README | distribution/whatsnew/README.md | Usage documentation |
-| Tracks guide | distribution/TRACKS.md | Release workflow guide |
+| Release notes | fastlane/metadata/android/${LOCALE}/changelogs/ | Per-locale release notes |
+| README | fastlane/metadata/android/README.md | Usage documentation |
+| Tracks guide | docs/PLAY_STORE_TRACKS.md | Release workflow guide |
 
 ## Troubleshooting
 
 ### "Character limit exceeded"
-**Cause:** Whatsnew file > 500 characters
+**Cause:** default.txt file > 500 characters
 **Fix:** Edit file to be more concise, focus on top 3-4 changes
 
 ### "Encoding issues"
 **Cause:** Non-UTF-8 encoding
-**Fix:** Save files as UTF-8: `iconv -f ISO-8859-1 -t UTF-8 whatsnew`
+**Fix:** Save files as UTF-8: `iconv -f ISO-8859-1 -t UTF-8 default.txt`
 
 ## Completion Criteria
 
-- [ ] `distribution/whatsnew/` directory exists
-- [ ] At least `en-US/whatsnew` file exists
-- [ ] `whatsnew/README.md` created
-- [ ] `distribution/TRACKS.md` created
-- [ ] All whatsnew files are < 500 characters
+- [ ] `fastlane/metadata/android/` directory exists
+- [ ] At least `en-US/changelogs/default.txt` file exists
+- [ ] `fastlane/metadata/android/README.md` created
+- [ ] `docs/PLAY_STORE_TRACKS.md` created
+- [ ] All default.txt files are < 500 characters

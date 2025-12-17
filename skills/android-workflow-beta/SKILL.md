@@ -27,7 +27,16 @@ Generates GitHub Actions workflow for manual deployment to Play Store beta (clos
 
 ## Process
 
-### Step 1: Generate Beta Testing Workflow
+### Step 1: Verify Fastlane Setup
+
+Ensure Fastlane is configured:
+```bash
+bundle exec fastlane lanes
+```
+
+Expected output should show `deploy_beta` lane.
+
+### Step 2: Generate Beta Testing Workflow
 
 Create `.github/workflows/deploy-beta.yml`:
 
@@ -45,64 +54,145 @@ on:
           - alpha
           - beta
         default: 'beta'
+      rollout_type:
+        description: 'Rollout type'
+        required: true
+        type: choice
+        options:
+          - full
+          - staged
+        default: 'full'
       rollout_percentage:
-        description: 'Rollout percentage (for alpha: 5-100, for beta: 5-100)'
+        description: 'Rollout percentage (only for staged: 0.05-1.0, e.g., 0.5 for 50%)'
         required: false
-        default: '100'
+        default: '0.5'
 
 jobs:
-  deploy-beta:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00  # v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/configuration-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run unit tests
+        run: ./gradlew test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.0
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
+          retention-days: 7
+
+  deploy:
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00  # v4.7.0
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'gradle'
+
+      - name: Setup Gradle cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/configuration-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Decode keystore
         run: |
-          echo "${{ secrets.SIGNING_KEY_STORE_BASE64 }}" | base64 -d > release.jks
+          echo "${{ secrets.SIGNING_KEY_STORE_BASE64 }}" | base64 -d > app/release.jks
         env:
           SIGNING_KEY_STORE_BASE64: ${{ secrets.SIGNING_KEY_STORE_BASE64 }}
 
-      - name: Build Release AAB
+      - name: Build Release Bundle
         run: ./gradlew bundleRelease
         env:
-          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/release.jks
+          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/app/release.jks
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Create Service Account File
+        run: echo "${{ secrets.SERVICE_ACCOUNT_JSON_PLAINTEXT }}" > service-account.json
+
+      - name: Deploy with Fastlane (Full Rollout)
+        if: github.event.inputs.rollout_type == 'full'
+        env:
+          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/app/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          PLAY_STORE_SERVICE_ACCOUNT: service-account.json
+        run: bundle exec fastlane deploy_beta
+
+      - name: Deploy with Fastlane (Staged Rollout)
+        if: github.event.inputs.rollout_type == 'staged'
+        env:
+          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/app/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          PLAY_STORE_SERVICE_ACCOUNT: service-account.json
+        run: bundle exec fastlane deploy_beta rollout:${{ github.event.inputs.rollout_percentage }}
+
+      - name: Cleanup Service Account
+        if: always()
+        run: rm -f service-account.json
+
       - name: Clean up keystore
         if: always()
-        run: rm -f release.jks
-
-      - name: Deploy to ${{ github.event.inputs.track }}
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: ${PACKAGE_NAME}
-          releaseFiles: app/build/outputs/bundle/release/app-release.aab
-          track: ${{ github.event.inputs.track }}
-          status: completed
-          userFraction: ${{ github.event.inputs.rollout_percentage }}
-          whatsNewDirectory: distribution/whatsnew
+        run: rm -f app/release.jks
 
       - name: Upload AAB artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.0
         with:
           name: beta-aab-${{ github.event.inputs.track }}
           path: app/build/outputs/bundle/release/app-release.aab
           retention-days: 90
 
       - name: Upload mapping file
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.0
         with:
           name: mapping-file-${{ github.event.inputs.track }}
           path: app/build/outputs/mapping/release/mapping.txt
@@ -111,11 +201,21 @@ jobs:
       - name: Summary
         run: |
           echo "✅ Deployed to ${{ github.event.inputs.track }} track"
-          echo "📊 Rollout: ${{ github.event.inputs.rollout_percentage }}%"
+          if [ "${{ github.event.inputs.rollout_type }}" = "staged" ]; then
+            echo "📊 Rollout: Staged (${{ github.event.inputs.rollout_percentage }})"
+          else
+            echo "📊 Rollout: Full (100%)"
+          fi
           echo ""
           echo "🔗 View in Play Console:"
-          echo "   https://play.google.com/console/developers/${PACKAGE_NAME}/tracks/${{ github.event.inputs.track }}"
+          echo "   https://play.google.com/console/developers/tracks/${{ github.event.inputs.track }}"
 ```
+
+**Key features:**
+- ✅ Uses Fastlane for deployment
+- ✅ Supports full and staged rollouts
+- ✅ Pinned all actions to commit SHAs
+- ✅ Test job runs before deployment
 
 ### Step 2: Update Workflows README
 

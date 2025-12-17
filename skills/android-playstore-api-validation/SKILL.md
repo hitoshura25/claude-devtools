@@ -124,8 +124,9 @@ def test_api_connection(json_path, package_name):
                 print(f"   Make sure app exists in Play Console")
             elif '403' in error_msg or 'permission' in error_msg.lower():
                 print(f"❌ Permission denied")
-                print(f"   Service account needs 'Release' permission in Play Console")
-                print(f"   Go to: Play Console → Setup → API access → Grant access")
+                print("Error: Service account needs 'Release apps to production tracks' permission.")
+                print("In Play Console: Setup > API access > Grant access > select your service account")
+                print("Required: 'Release to production, exclude devices, and use Play App Signing'")
             else:
                 print(f"❌ API error: {error_msg}")
             return False
@@ -167,7 +168,7 @@ def main():
     print("=" * 60)
     print("\nYour Play Store API setup is ready for deployment.")
     print("\nNext steps:")
-    print("  1. Add SERVICE_ACCOUNT_JSON to GitHub Secrets")
+    print("  1. Add SERVICE_ACCOUNT_JSON_PLAINTEXT to GitHub Secrets")
     print("  2. Run: /devtools:android-playstore-publish")
     print("  3. Deploy your app!")
 
@@ -229,14 +230,31 @@ If validation fails, check:
 
 **MANDATORY:** Run the validation script:
 
-```bash
-# Install dependencies
-pip install google-auth google-api-python-client
+### Step 1: Create virtual environment
 
-# Run validation (user provides paths)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
+
+### Step 2: Install dependencies
+
+```bash
+pip install google-auth google-api-python-client
+```
+
+### Step 3: Run validation
+
+```bash
 python3 scripts/validate-playstore.py \
   /path/to/service-account.json \
   com.example.app
+```
+
+### Step 4: Deactivate when done
+
+```bash
+deactivate
 ```
 
 **Expected output:**

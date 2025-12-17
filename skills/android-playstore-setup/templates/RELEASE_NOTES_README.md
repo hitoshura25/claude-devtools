@@ -2,28 +2,32 @@
 
 ## Overview
 
-This directory contains release notes (what's new) for different locales. These notes are displayed to users when they update your app.
+This directory contains release notes (what's new) for different locales. These notes are displayed to users when they update your app. This structure is used by Fastlane for Play Store deployment.
 
 ## Directory Structure
 
-Each locale has its own directory with a `whatsnew` file:
+Each locale has its own changelogs directory with a `default.txt` file:
 
 ```
-distribution/whatsnew/
+fastlane/metadata/android/
 ├── en-US/
-│   └── whatsnew
+│   └── changelogs/
+│       └── default.txt
 ├── de-DE/
-│   └── whatsnew
+│   └── changelogs/
+│       └── default.txt
 ├── es-ES/
-│   └── whatsnew
+│   └── changelogs/
+│       └── default.txt
 ├── fr-FR/
-│   └── whatsnew
+│   └── changelogs/
+│       └── default.txt
 └── ...
 ```
 
 ## File Format
 
-- **Filename:** `whatsnew` (no file extension)
+- **Filename:** `default.txt`
 - **Format:** Plain text (UTF-8 encoding)
 - **Max length:** 500 characters
 - **Line breaks:** Supported but count toward character limit
@@ -121,15 +125,25 @@ For complete list, see: https://support.google.com/googleplay/android-developer/
 
 ### Automation
 
-Release notes are automatically included in GitHub Actions deployment:
+Release notes are automatically included by Fastlane during deployment:
 
-```yaml
-# In .github/workflows/playstore-deploy.yml
-- name: Deploy to Play Store
-  uses: r0adkll/upload-google-play@v1
-  with:
-    whatsNewDirectory: distribution/whatsnew
+```ruby
+# In fastlane/Fastfile
+lane :deploy_internal do
+  # Fastlane automatically looks for changelogs in fastlane/metadata/android/{locale}/changelogs/
+  upload_to_play_store(
+    track: "internal",
+    aab: "app/build/outputs/bundle/release/app-release.aab"
+  )
+end
 ```
+
+Deployment command:
+```bash
+bundle exec fastlane deploy_internal
+```
+
+Fastlane automatically includes release notes from `fastlane/metadata/android/{locale}/changelogs/default.txt` when deploying.
 
 ## Character Count Checker
 
@@ -137,7 +151,7 @@ To check character count:
 
 ```bash
 # Count characters in en-US release notes
-wc -m distribution/whatsnew/en-US/whatsnew
+wc -m fastlane/metadata/android/en-US/changelogs/default.txt
 ```
 
 Or use online tool: https://www.charactercountonline.com/
@@ -155,10 +169,11 @@ Before deploying, verify:
 ## Troubleshooting
 
 **"Release notes not showing in Play Console"**
-- Check file name is exactly `whatsnew` (no extension)
+- Check file name is exactly `default.txt`
 - Verify UTF-8 encoding
 - Ensure file is not empty
 - Check locale code matches Play Console format
+- Verify file is in correct location: `fastlane/metadata/android/{locale}/changelogs/default.txt`
 
 **"Character limit exceeded"**
 - Remove unnecessary words
@@ -173,18 +188,9 @@ Before deploying, verify:
 
 ## Version-Specific Notes
 
-If you need different notes for different versions:
+Fastlane uses the release notes from `fastlane/metadata/android/{locale}/changelogs/` for each deployment. Simply update the `default.txt` files before building and deploying a new version.
 
-```
-distribution/whatsnew-v1.2.0/
-  en-US/
-    whatsnew
-distribution/whatsnew-v1.3.0/
-  en-US/
-    whatsnew
-```
-
-Then specify in GitHub Actions workflow.
+For tracking historical release notes, consider maintaining them in a separate `CHANGELOG.md` file or using git tags.
 
 ## References
 

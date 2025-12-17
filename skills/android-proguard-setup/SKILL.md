@@ -136,30 +136,97 @@ grep "isShrinkResources = true" app/build.gradle.kts && echo "✓ Resource shrin
 **Cause:** ProGuard obfuscated code that uses reflection
 **Fix:** Add keep rules for classes used via reflection
 
-## Common Library Keep Rules
+## Library-Specific ProGuard Rules
 
-If using specific libraries, add these rules:
+Add these rules based on your project dependencies:
 
-**Gson:**
+### Retrofit/OkHttp
 ```proguard
 -keepattributes Signature
--keep class * implements com.google.gson.TypeAdapter
--keep class * implements com.google.gson.TypeAdapterFactory
-```
-
-**Retrofit:**
-```proguard
+-keepattributes *Annotation*
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
+-dontwarn okhttp3.**
 -keepattributes Signature, InnerClasses, EnclosingMethod
 -keepclassmembers,allowshrinking,allowobfuscation interface * {
     @retrofit2.http.* <methods>;
 }
 ```
 
-**Room:**
+### Gson
+```proguard
+-keepattributes Signature
+-keepattributes *Annotation*
+-keep class com.google.gson.** { *; }
+-keep class * implements com.google.gson.TypeAdapterFactory
+-keep class * implements com.google.gson.JsonSerializer
+-keep class * implements com.google.gson.JsonDeserializer
+-keepclassmembers,allowobfuscation class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
+```
+
+### Kotlin Serialization
+```proguard
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.AnnotationsKt
+-keepclassmembers class kotlinx.serialization.json.** {
+    *** Companion;
+}
+```
+
+### Health Connect
+```proguard
+-keep class androidx.health.connect.client.** { *; }
+-keep class androidx.health.platform.client.** { *; }
+```
+
+### Room
 ```proguard
 -keep class * extends androidx.room.RoomDatabase
 -keep @androidx.room.Entity class *
 ```
+
+## ProGuard Test Configuration
+
+**Important:** Test libraries should NEVER be in release builds. They are `androidTestImplementation` only.
+
+If you need to run instrumented tests on release builds (e.g., to verify signing), use a separate test ProGuard file:
+
+**Step 1: Create** `app/proguard-rules-androidTest.pro`:
+
+```proguard
+# Keep EVERYTHING in test APK - we only care about signing, not size
+-dontobfuscate
+-dontoptimize
+-dontshrink
+-keep class ** { *; }
+```
+
+**Step 2: Update** `app/build.gradle.kts`:
+
+```kotlin
+android {
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            signingConfig = signingConfigs.getByName("release")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // Keep-all rules for test APK only
+            testProguardFiles("proguard-rules-androidTest.pro")
+        }
+    }
+    testBuildType = "release"
+}
+```
+
+**Result:**
+- App APK: Minified with release key ✅
+- Test APK: Not minified, signed with release key ✅
+- Both have matching signatures for instrumentation ✅
 
 ## Completion Criteria
 

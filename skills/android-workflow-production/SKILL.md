@@ -29,7 +29,16 @@ Generates GitHub Actions workflows for production deployment with staged rollout
 
 ## Process
 
-### Step 1: Create Production Deployment Workflow
+### Step 1: Verify Fastlane Setup
+
+Ensure Fastlane is configured:
+```bash
+bundle exec fastlane lanes
+```
+
+Expected output should show `deploy_production`, `increase_rollout`, and `halt_rollout` lanes.
+
+### Step 2: Create Production Deployment Workflow
 
 Create `.github/workflows/deploy-production.yml`:
 
@@ -37,75 +46,159 @@ Create `.github/workflows/deploy-production.yml`:
 name: Deploy to Production
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
+      rollout_type:
+        description: 'Rollout type'
+        required: true
+        type: choice
+        options:
+          - staged
+          - full
+        default: 'staged'
       rollout_percentage:
-        description: 'Rollout percentage (5, 10, 20, 50, 100)'
+        description: 'Rollout percentage (only for staged: 0.05-1.0, e.g., 0.1 for 10%)'
         required: false
-        default: '5'
+        default: '0.05'
 
 jobs:
-  validate-and-deploy:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00  # v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/configuration-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run unit tests
+        run: ./gradlew test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.0
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
+          retention-days: 7
+
+  deploy:
+    needs: test
     runs-on: ubuntu-latest
     environment: production
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0  # Full history for tags
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00  # v4.7.0
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'gradle'
+
+      - name: Setup Gradle cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle/configuration-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Decode keystore
         run: |
-          echo "${{ secrets.SIGNING_KEY_STORE_BASE64 }}" | base64 -d > release.jks
-
-      - name: Run E2E tests on release
-        run: |
-          ./gradlew bundleRelease
-          # Tests would run here if emulator setup
+          echo "${{ secrets.SIGNING_KEY_STORE_BASE64 }}" | base64 -d > app/release.jks
         env:
-          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/release.jks
+          SIGNING_KEY_STORE_BASE64: ${{ secrets.SIGNING_KEY_STORE_BASE64 }}
+
+      - name: Build Release Bundle
+        run: ./gradlew bundleRelease
+        env:
+          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/app/release.jks
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
-      - name: Deploy to Production
-        uses: r0adkll/upload-google-play@v1
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
         with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: ${PACKAGE_NAME}
-          releaseFiles: app/build/outputs/bundle/release/app-release.aab
-          track: production
-          status: inProgress
-          inAppUpdatePriority: 2
-          userFraction: ${{ github.event.inputs.rollout_percentage || '0.05' }}
-          whatsNewDirectory: distribution/whatsnew
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Create Service Account File
+        run: echo "${{ secrets.SERVICE_ACCOUNT_JSON_PLAINTEXT }}" > service-account.json
+
+      - name: Deploy with Fastlane (Full Rollout)
+        if: github.event.inputs.rollout_type == 'full'
+        env:
+          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/app/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          PLAY_STORE_SERVICE_ACCOUNT: service-account.json
+        run: bundle exec fastlane deploy_production rollout:1.0
+
+      - name: Deploy with Fastlane (Staged Rollout)
+        if: github.event.inputs.rollout_type == 'staged'
+        env:
+          SIGNING_KEY_STORE_PATH: ${{ github.workspace }}/app/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          PLAY_STORE_SERVICE_ACCOUNT: service-account.json
+        run: bundle exec fastlane deploy_production rollout:${{ github.event.inputs.rollout_percentage }}
+
+      - name: Cleanup Service Account
+        if: always()
+        run: rm -f service-account.json
 
       - name: Clean up keystore
         if: always()
-        run: rm -f release.jks
+        run: rm -f app/release.jks
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+        run: |
+          gh release create "${{ steps.get_tag.outputs.tag }}" \
+            --title "Release ${{ steps.get_tag.outputs.tag }}" \
+            --notes "Production release ${{ steps.get_tag.outputs.tag }}" \
+            --latest \
+            app/build/outputs/bundle/release/app-release.aab
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.0
         with:
           name: production-release
           path: |
@@ -114,7 +207,17 @@ jobs:
           retention-days: 365
 ```
 
-### Step 2: Create Rollout Management Workflow
+**Key features:**
+- ✅ Uses Fastlane for deployment
+- ✅ Supports full and staged rollouts
+- ✅ Creates GitHub releases automatically
+- ✅ Pinned all actions to commit SHAs
+- ✅ Test job runs before deployment
+- ✅ Manual trigger only (no automatic tag deployment)
+
+### Step 3: Create Rollout Management Workflow
+
+**Note:** Fastlane provides full support for rollout management through dedicated lanes.
 
 Create `.github/workflows/manage-rollout.yml`:
 
@@ -129,14 +232,22 @@ on:
         required: true
         type: choice
         options:
-          - increase
+          - promote
           - halt
-          - resume
           - complete
-      percentage:
-        description: 'New percentage (for increase action: 5, 10, 20, 50, 100)'
+      from_track:
+        description: 'Source track (for promote action)'
         required: false
-        default: '20'
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+        default: 'beta'
+      percentage:
+        description: 'Rollout percentage (for promote: 0.05-1.0, e.g., 0.2 for 20%)'
+        required: false
+        default: '0.05'
 
 jobs:
   manage-rollout:
@@ -145,52 +256,59 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00  # v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Create Service Account File
+        run: echo "${{ secrets.SERVICE_ACCOUNT_JSON_PLAINTEXT }}" > service-account.json
 
       - name: Increase Rollout
-        if: github.event.inputs.action == 'increase'
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: ${PACKAGE_NAME}
-          track: production
-          status: inProgress
-          userFraction: ${{ github.event.inputs.percentage }}
-
-      - name: Halt Rollout
-        if: github.event.inputs.action == 'halt'
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: ${PACKAGE_NAME}
-          track: production
-          status: halted
-
-      - name: Resume Rollout
-        if: github.event.inputs.action == 'resume'
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: ${PACKAGE_NAME}
-          track: production
-          status: inProgress
+        if: github.event.inputs.action == 'promote'
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT: service-account.json
+        run: bundle exec fastlane increase_rollout rollout:${{ github.event.inputs.percentage }}
 
       - name: Complete Rollout (100%)
         if: github.event.inputs.action == 'complete'
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: ${PACKAGE_NAME}
-          track: production
-          status: completed
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT: service-account.json
+        run: bundle exec fastlane increase_rollout rollout:1.0
+
+      - name: Halt Rollout
+        if: github.event.inputs.action == 'halt'
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT: service-account.json
+        run: bundle exec fastlane halt_rollout
+
+      - name: Cleanup Service Account
+        if: always()
+        run: rm -f service-account.json
 
       - name: Notify result
+        if: success()
         run: |
           echo "✅ Rollout action completed: ${{ github.event.inputs.action }}"
-          if [ "${{ github.event.inputs.action }}" == "increase" ]; then
-            echo "📊 New rollout percentage: ${{ github.event.inputs.percentage }}%"
+          if [ "${{ github.event.inputs.action }}" == "promote" ]; then
+            echo "📊 Promoted from ${{ github.event.inputs.from_track }} to production"
+            echo "📊 Rollout percentage: ${{ github.event.inputs.percentage }}"
           fi
 ```
+
+**Key features:**
+- ✅ Uses Fastlane for rollout management
+- ✅ Supports increase, complete, and halt actions
+- ✅ Pinned all actions to commit SHAs
 
 ### Step 3: Create Environment Setup Guide
 

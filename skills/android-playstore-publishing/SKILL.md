@@ -19,7 +19,7 @@ Generates all GitHub Actions workflows for Play Store deployment:
 ## Prerequisites
 
 - Play Console setup complete (run `android-playstore-setup` first)
-- SERVICE_ACCOUNT_JSON in GitHub Secrets
+- SERVICE_ACCOUNT_JSON_PLAINTEXT in GitHub Secrets
 - Signing secrets configured
 - Package name known
 
@@ -142,7 +142,7 @@ After completion, provide this summary:
      Create "production" with required reviewers
 
   2. Add GitHub Secrets:
-     - SERVICE_ACCOUNT_JSON (from Play Console setup)
+     - SERVICE_ACCOUNT_JSON_PLAINTEXT (from Play Console setup)
      - SIGNING_KEY_STORE_BASE64
      - SIGNING_KEY_ALIAS
      - SIGNING_STORE_PASSWORD

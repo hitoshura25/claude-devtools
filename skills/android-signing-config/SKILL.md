@@ -29,7 +29,46 @@ Configures release build signing with dual-source strategy: environment variable
 
 ## Process
 
-### Step 1: Add Signing Configuration to build.gradle.kts
+### Step 1: Detect and Select Environment Variable Prefix
+
+**Purpose:** Avoid variable name conflicts with other projects by using a project-specific prefix.
+
+**Step 1a: Auto-detect project name**
+
+```bash
+# From settings.gradle.kts
+PROJECT_NAME=$(grep "rootProject.name" settings.gradle.kts | sed 's/.*"\(.*\)".*/\1/' | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+echo "Detected project: $PROJECT_NAME"
+```
+
+**Step 1b: Ask user for prefix preference**
+
+> "Choose environment variable prefix for signing configuration:
+> 1. **${PROJECT_NAME}** (detected from project) - e.g., `${PROJECT_NAME}_SIGNING_KEY_STORE_PATH`
+> 2. **APP** (generic) - e.g., `APP_SIGNING_KEY_STORE_PATH`
+> 3. **Custom** - Enter your own prefix
+>
+> Select option (1/2/3):"
+
+**Step 1c: Store selected prefix**
+
+```bash
+# Based on user selection:
+# Option 1: PREFIX="$PROJECT_NAME"
+# Option 2: PREFIX="APP"
+# Option 3: PREFIX="{user_custom_prefix}"
+
+echo "Using prefix: $PREFIX"
+echo "Example variable: ${PREFIX}_SIGNING_KEY_STORE_PATH"
+```
+
+**GitHub Secrets to create later:**
+- `${PREFIX}_SIGNING_KEY_STORE_BASE64`
+- `${PREFIX}_SIGNING_KEY_ALIAS`
+- `${PREFIX}_SIGNING_STORE_PASSWORD`
+- `${PREFIX}_SIGNING_KEY_PASSWORD`
+
+### Step 2: Add Signing Configuration to build.gradle.kts
 
 Update `app/build.gradle.kts` to add signing configuration:
 
@@ -45,15 +84,18 @@ android {
     // ADD THIS SECTION
     signingConfigs {
         create("release") {
+            // Use the prefix selected in Step 1 (replace {PREFIX} with actual prefix)
+            val prefix = "{PREFIX}"  // e.g., "APP" or project-specific prefix
+
             // Priority: environment variables (CI/CD) > gradle.properties (local dev)
-            val keystorePath = System.getenv("SIGNING_KEY_STORE_PATH")
-                ?: project.findProperty("SIGNING_KEY_STORE_PATH")?.toString()
-            val storePass = System.getenv("SIGNING_STORE_PASSWORD")
-                ?: project.findProperty("SIGNING_STORE_PASSWORD")?.toString()
-            val alias = System.getenv("SIGNING_KEY_ALIAS")
-                ?: project.findProperty("SIGNING_KEY_ALIAS")?.toString()
-            val keyPass = System.getenv("SIGNING_KEY_PASSWORD")
-                ?: project.findProperty("SIGNING_KEY_PASSWORD")?.toString()
+            val keystorePath = System.getenv("${prefix}_SIGNING_KEY_STORE_PATH")
+                ?: project.findProperty("${prefix}_SIGNING_KEY_STORE_PATH")?.toString()
+            val storePass = System.getenv("${prefix}_SIGNING_STORE_PASSWORD")
+                ?: project.findProperty("${prefix}_SIGNING_STORE_PASSWORD")?.toString()
+            val alias = System.getenv("${prefix}_SIGNING_KEY_ALIAS")
+                ?: project.findProperty("${prefix}_SIGNING_KEY_ALIAS")?.toString()
+            val keyPass = System.getenv("${prefix}_SIGNING_KEY_PASSWORD")
+                ?: project.findProperty("${prefix}_SIGNING_KEY_PASSWORD")?.toString()
 
             if (keystorePath != null && storePass != null && alias != null && keyPass != null) {
                 storeFile = file(keystorePath)
@@ -73,7 +115,9 @@ android {
     }
 
     // Validate signing config only when building release variants
-    tasks.matching { it.name.contains("Release") }.configureEach {
+    tasks.matching {
+        it.name.matches(Regex(".*[aA]ssemble.*Release.*|.*[bB]undle.*Release.*"))
+    }.configureEach {
         doFirst {
             val releaseConfig = android.signingConfigs.getByName("release")
             if (releaseConfig.storeFile == null) {
@@ -81,17 +125,17 @@ android {
                     """
                     Release signing not configured!
 
-                    For CI/CD: Set environment variables:
-                      - SIGNING_KEY_STORE_PATH
-                      - SIGNING_STORE_PASSWORD
-                      - SIGNING_KEY_ALIAS
-                      - SIGNING_KEY_PASSWORD
+                    For CI/CD: Set environment variables (using prefix: $prefix):
+                      - ${prefix}_SIGNING_KEY_STORE_PATH
+                      - ${prefix}_SIGNING_STORE_PASSWORD
+                      - ${prefix}_SIGNING_KEY_ALIAS
+                      - ${prefix}_SIGNING_KEY_PASSWORD
 
                     For local development: Add to ~/.gradle/gradle.properties:
-                      SIGNING_KEY_STORE_PATH=/path/to/local-dev-release.jks
-                      SIGNING_STORE_PASSWORD=your-password
-                      SIGNING_KEY_ALIAS=local-dev
-                      SIGNING_KEY_PASSWORD=your-password
+                      ${prefix}_SIGNING_KEY_STORE_PATH=/path/to/local-dev-release.jks
+                      ${prefix}_SIGNING_STORE_PASSWORD=your-password
+                      ${prefix}_SIGNING_KEY_ALIAS=local-dev
+                      ${prefix}_SIGNING_KEY_PASSWORD=your-password
                     """.trimIndent()
                 )
             }
@@ -122,15 +166,16 @@ Ask user permission to update `~/.gradle/gradle.properties`:
 # Read credentials from KEYSTORE_INFO.txt
 LOCAL_PASSWORD=$(grep "Local.*Store Password:" keystores/KEYSTORE_INFO.txt | cut -d: -f2 | xargs)
 PROJECT_PATH=$(pwd)
+PREFIX="{PREFIX}"  # Use the prefix selected in Step 1
 
-# Add to ~/.gradle/gradle.properties
+# Add to ~/.gradle/gradle.properties (using selected prefix)
 cat >> ~/.gradle/gradle.properties << EOF
 
-# ${PROJECT_PATH}
-SIGNING_KEY_STORE_PATH=${PROJECT_PATH}/keystores/local-dev-release.jks
-SIGNING_KEY_ALIAS=local-dev
-SIGNING_STORE_PASSWORD=${LOCAL_PASSWORD}
-SIGNING_KEY_PASSWORD=${LOCAL_PASSWORD}
+# ${PROJECT_PATH} (using prefix: ${PREFIX})
+${PREFIX}_SIGNING_KEY_STORE_PATH=${PROJECT_PATH}/keystores/local-dev-release.jks
+${PREFIX}_SIGNING_KEY_ALIAS=local-dev
+${PREFIX}_SIGNING_STORE_PASSWORD=${LOCAL_PASSWORD}
+${PREFIX}_SIGNING_KEY_PASSWORD=${LOCAL_PASSWORD}
 EOF
 ```
 

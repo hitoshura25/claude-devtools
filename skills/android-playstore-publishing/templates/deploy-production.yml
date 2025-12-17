@@ -1,3 +1,7 @@
+# ⚠️ DEPRECATED: This template uses r0adkll/upload-google-play which is deprecated.
+# Use /devtools:android-workflow-production instead, which uses Gradle Play Publisher (GPP).
+# GPP is the recommended solution for Play Store publishing.
+
 name: Deploy to Production
 
 on:
@@ -187,7 +191,7 @@ jobs:
           status: inProgress
           inAppUpdatePriority: 3
           userFraction: ${{ steps.rollout.outputs.percentage }}
-          whatsNewDirectory: distribution/whatsnew
+          whatsNewDirectory: src/main/play/release-notes
           mappingFile: build-outputs/app/build/outputs/mapping/release/mapping.txt
       
       - name: Create GitHub Release

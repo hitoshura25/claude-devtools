@@ -26,14 +26,14 @@ Do NOT mark complete unless ALL are verified:
 
 ## Quick Reference
 
-**Inputs:** Play Console setup complete, SERVICE_ACCOUNT_JSON in GitHub Secrets
+**Inputs:** Play Console setup complete, SERVICE_ACCOUNT_JSON_PLAINTEXT in GitHub Secrets
 **Outputs:** 4 GitHub Actions workflows, version script, deployment documentation
 **Verify:** `yamllint .github/workflows/deploy-*.yml`
 
 ## Prerequisites
 
 - Run `/devtools:android-playstore-setup` first
-- SERVICE_ACCOUNT_JSON in GitHub Secrets
+- SERVICE_ACCOUNT_JSON_PLAINTEXT in GitHub Secrets
 - Signing secrets configured
 - First manual upload to Play Console required
 

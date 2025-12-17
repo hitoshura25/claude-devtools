@@ -227,7 +227,7 @@ Manual steps required:
   1. Create service account in Google Cloud
   2. Enable Play Developer API
   3. Link to Play Console
-  4. Add SERVICE_ACCOUNT_JSON to GitHub Secrets
+  4. Add SERVICE_ACCOUNT_JSON_PLAINTEXT to GitHub Secrets
 
 See: distribution/PLAY_CONSOLE_SETUP.md for detailed guide
 
@@ -390,7 +390,7 @@ grep -q "keystores/" .gitignore && echo "✓ Keystores gitignored" || echo "✗ 
 
   🔐 Setup GitHub Secrets:
     1. Go to: Repository → Settings → Secrets → Actions
-    2. Add SERVICE_ACCOUNT_JSON (see guide below)
+    2. Add SERVICE_ACCOUNT_JSON_PLAINTEXT (see guide below)
     3. Add signing secrets:
        - SIGNING_KEY_STORE_BASE64
        - SIGNING_KEY_ALIAS
@@ -415,7 +415,7 @@ grep -q "keystores/" .gitignore && echo "✓ Keystores gitignored" || echo "✗ 
     4. Save protection rules
 
   ✅ Test the Pipeline:
-    1. Update release notes: distribution/whatsnew/en-US/whatsnew
+    1. Update release notes: fastlane/metadata/android/en-US/changelogs/default.txt
     2. Commit and push to main:
        git add .
        git commit -m "Add Play Store deployment pipeline"
@@ -453,13 +453,13 @@ grep -q "keystores/" .gitignore && echo "✓ Keystores gitignored" || echo "✗ 
     • app/src/androidTest/.../utils/ScreenshotUtil.kt
 
   Release Notes:
-    • distribution/whatsnew/en-US/whatsnew
-    • distribution/whatsnew/README.md
-    • distribution/TRACKS.md
+    • fastlane/metadata/android/en-US/changelogs/default.txt
+    • fastlane/metadata/android/README.md
+    • docs/PLAY_STORE_TRACKS.md
 
   Documentation:
-    • distribution/PLAY_CONSOLE_SETUP.md
-    • distribution/GITHUB_SECRETS.md
+    • PLAY_CONSOLE_SETUP.md (project root)
+    • GITHUB_SECRETS.md (if needed)
     • .github/workflows/README.md
 
   Workflows:
