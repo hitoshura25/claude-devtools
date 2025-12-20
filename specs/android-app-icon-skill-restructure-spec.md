@@ -1,3 +1,26 @@
+# Android App Icon Skill - Restructure Spec
+
+## Overview
+
+Restructure the `skills/android-app-icon/SKILL.md` to improve agent execution consistency by:
+
+1. Moving "How This Skill Works" to the top (before prerequisites)
+2. Using checklist/todo format for prerequisites and steps
+3. Separating "what to do" (checklist) from "how to do it" (reference details)
+4. Adding explicit confirmation gates inline with the checklist
+
+## Rationale
+
+- Agents tend to follow lists linearly
+- Checkboxes create a "must complete" mental model
+- Compact checklist at top is scannable; details below when needed
+- Confirmation gates inline with steps are harder to skip
+
+---
+
+## New SKILL.md Structure
+
+```markdown
 ---
 name: android-app-icon
 description: Generate Android adaptive icons from Iconify's 200k+ open source icons
@@ -217,3 +240,24 @@ See [Installing rsvg-convert](#installing-rsvg-convert)
 
 ### Icon not found
 Verify icon ID at https://icon-sets.iconify.design/
+```
+
+---
+
+## Files to Modify
+
+| File | Action |
+|------|--------|
+| `skills/android-app-icon/SKILL.md` | Replace with new structure above |
+
+---
+
+## Key Changes from Current Version
+
+| Aspect | Current | New |
+|--------|---------|-----|
+| Structure | Prerequisites first | "How This Skill Works" first |
+| Steps format | Prose with inline code | Checklist with linked details |
+| Confirmation gates | In step details | Inline with checklist (⏸️ WAIT) |
+| Legacy icon handling | Not explicit | Step 1 with user confirmation |
+| Details location | Mixed with steps | Separate "Reference Details" section |
