@@ -1,0 +1,20 @@
+{
+  "name": "devtools",
+  "version": "2.0.0",
+  "description": "Quality gates and deployment workflows for AI-driven development",
+  "author": {
+    "name": "Vinayak Menon"
+  },
+  "homepage": "https://github.com/anthropics/claude-devtools",
+  "repository": "https://github.com/anthropics/claude-devtools",
+  "license": "MIT",
+  "keywords": [
+    "quality-gates",
+    "linting",
+    "security",
+    "android",
+    "deployment",
+    "ci-cd",
+    "tdd"
+  ]
+}

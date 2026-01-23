@@ -1,0 +1,15 @@
+{
+  "name": "devtools-dev",
+  "description": "Development marketplace for devtools plugin",
+  "owner": {
+    "name": "Vinayak Menon"
+  },
+  "plugins": [
+    {
+      "name": "devtools",
+      "description": "Quality gates and deployment workflows for AI-driven development",
+      "version": "2.0.0",
+      "source": "./"
+    }
+  ]
+}
