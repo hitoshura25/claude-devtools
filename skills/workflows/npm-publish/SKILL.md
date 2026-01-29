@@ -1,221 +1,203 @@
 ---
 name: npm-publish
-description: Use when publishing npm packages to the npm registry
+description: Use when publishing npm packages, especially from pnpm/Turborepo monorepos with Changesets
 ---
 
 # npm Publish
 
 ## Overview
 
-Publish npm packages with version management, quality gates, and automated CI/CD.
+Publish npm packages with Changesets versioning, Turborepo builds, and automated CI/CD. Supports both single packages and monorepos.
 
 ## Prerequisites
 
 - **Quality gates passed:** All tests, lint, security must pass
-- **npm account:** With publish access to package
-- **NPM_TOKEN:** For CI/CD automation
-- **package.json:** Properly configured
+- **npm account:** With publish access to package scope
+- **Changesets:** For version management (monorepos)
+- **CI/CD:** GitHub Actions with NPM Trusted Publishing (recommended)
 
 ## The Rule
 
 ```
-NO PUBLISH WITHOUT ALL QUALITY GATES PASSING
-No "quick patch". No "just a README update".
-Every publish goes through the full pipeline.
+NO PUBLISH WITHOUT:
+1. Changeset created for the change
+2. All quality gates passing
+3. Version Packages PR merged (monorepos)
 ```
 
-## Process
+## Monorepo vs Single Package
+
+| Aspect | Single Package | Monorepo |
+|--------|---------------|----------|
+| Version management | `npm version` | Changesets |
+| Build orchestration | `npm run build` | Turborepo |
+| Publishing | `npm publish` | `pnpm release` via CI |
+| Dependency management | npm/yarn | pnpm workspaces |
+
+## Monorepo Workflow (Recommended)
+
+### 1. Create Changeset
+
+After making changes, create a changeset file:
+
+```bash
+# Interactive (if available)
+pnpm changeset
+
+# Or manually create .changeset/random-name.md
+```
+
+**Changeset format:**
+```markdown
+---
+"@scope/package-name": patch
+---
+
+Brief description for CHANGELOG
+```
+
+**Version bump types:**
+- `patch` - Bug fixes (0.1.2 → 0.1.3)
+- `minor` - New features (0.1.0 → 0.2.0)
+- `major` - Breaking changes (1.0.0 → 2.0.0)
+
+**Multiple packages:**
+```markdown
+---
+"@scope/core": patch
+"@scope/cli": minor
+---
+
+Add CLI feature with core bugfix
+```
+
+**Empty changeset (no release needed):**
+```markdown
+---
+---
+
+Update CI workflow (no package changes)
+```
+
+### 2. Commit and Push
+
+```bash
+git add .
+git commit -m "feat: add feature"
+git push origin feature-branch
+```
+
+Pre-commit hook enforces changeset exists.
+
+### 3. Merge PR to Main
+
+CI runs tests → PR merged → CI creates "Version Packages" PR automatically.
+
+### 4. Version Packages PR
+
+Changesets action:
+- Bumps versions in all affected package.json files
+- Updates CHANGELOG.md files
+- Creates PR titled "Version Packages"
+
+### 5. Merge Version Packages PR
+
+Once merged:
+- CI publishes all changed packages to npm
+- Uses OIDC (no tokens needed) for existing packages
+- Falls back to NPM_TOKEN for first publish of new packages
+
+### 6. Verify Publication
+
+```bash
+# Check published version
+npm view @scope/package-name version
+
+# Verify provenance (OIDC)
+npm view @scope/package-name --json | jq '.provenance'
+```
+
+## Single Package Workflow
+
+For non-monorepo packages:
 
 ### 1. Verify Quality Gates
 
 ```bash
-# All must pass:
 npm test
 npm run lint
 npm audit --audit-level=high
 ```
 
-### 2. Verify Package Configuration
+### 2. Bump Version
 
 ```bash
-# Check package.json
-cat package.json | jq '.name, .version, .main, .files'
-
-# Verify what will be published
-npm pack --dry-run
+npm version patch  # or minor/major
 ```
 
-### 3. Bump Version
+### 3. Build and Publish
 
 ```bash
-# Patch (0.0.X) - bug fixes
-npm version patch
-
-# Minor (0.X.0) - new features, backwards compatible
-npm version minor
-
-# Major (X.0.0) - breaking changes
-npm version major
-```
-
-This automatically:
-- Updates package.json
-- Creates git commit
-- Creates git tag
-
-### 4. Build (if needed)
-
-```bash
-# If package has build step
 npm run build
-
-# Verify dist files exist
-ls dist/
-```
-
-### 5. Publish
-
-```bash
-# Publish to npm
 npm publish
-
-# For scoped packages (public)
-npm publish --access public
 ```
 
-### 6. Push Tags
+### 4. Push Tags
 
 ```bash
-git push origin main
-git push origin --tags
+git push origin main --tags
 ```
 
-### 7. Verify Publication
+## CI/CD Configuration
 
-```bash
-# Check npm registry
-npm view your-package-name version
+**Required secrets:**
+- `NPM_PUBLISH_TOKEN` - For first publish of new packages
+- `RELEASE_BOT_APP_ID` + `RELEASE_BOT_PRIVATE_KEY` - For Version Packages PR
 
-# Test installation
-npm install your-package-name@latest
-```
+**OIDC setup (per package):**
+1. Publish package once (uses NPM_TOKEN)
+2. Go to npmjs.com → Package → Settings → Trusted Publishers
+3. Add GitHub Actions publisher with workflow filename
 
-## CI/CD Automation
-
-### GitHub Actions Workflow
-
-Create `.github/workflows/publish.yml`:
-
-```yaml
-name: Publish
-
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-      
-      - run: npm ci
-      - run: npm test
-      - run: npm run lint
-      - run: npm audit --audit-level=high
-      - run: npm run build --if-present
-      
-      - run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-```
-
-### NPM Token Setup
-
-1. Go to npmjs.com → Account → Access Tokens
-2. Generate new token (Automation type)
-3. Add as GitHub secret `NPM_TOKEN`
-
-## Package Configuration
-
-### Minimal package.json
-
-```json
-{
-  "name": "your-package",
-  "version": "1.0.0",
-  "description": "Package description",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "test": "jest",
-    "lint": "eslint .",
-    "prepublishOnly": "npm run build && npm test"
-  },
-  "keywords": ["keyword1", "keyword2"],
-  "author": "Your Name",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/you/your-package"
-  }
-}
-```
-
-### Important Fields
-
-| Field | Purpose |
-|-------|---------|
-| `main` | Entry point for CommonJS |
-| `module` | Entry point for ESM |
-| `types` | TypeScript definitions |
-| `files` | What to include in package |
-| `prepublishOnly` | Run before publish |
+See `references/trusted-publishing.md` for detailed setup.
 
 ## Anti-Rationalization
 
 | Excuse | Reality |
 |--------|---------|
-| "Just a README update" | Still needs version bump and quality gates. |
-| "Tests take too long" | Tests prevent broken publishes. Run them. |
-| "It's a patch, no big deal" | Patches can break things. Full pipeline. |
-| "I'll fix it in next version" | Users are affected now. Don't publish broken code. |
+| "Just a small fix" | Still needs changeset. Pre-commit hook enforces it. |
+| "Changeset is annoying" | 10 seconds to create. Prevents version chaos. |
+| "I'll version manually" | Manual versioning breaks in monorepos. Use Changesets. |
+| "NPM_TOKEN is easier" | OIDC is more secure. No token rotation needed. |
+| "Skip CI for speed" | CI prevents broken publishes. Never skip. |
 
 ## Red Flags - STOP
 
-- Publishing without running tests
-- Skipping version bump
-- Publishing from dirty working directory
-- Ignoring npm audit warnings
+- Committing without changeset (hook will block anyway)
+- Publishing locally instead of via CI
 - Using `--force` to bypass checks
+- Manually editing version numbers
+- Skipping the Version Packages PR
 
 **If you catch yourself doing any of these: STOP. Follow the process.**
 
 ## Verification
 
 ```bash
-# Verify published version
-npm view your-package version
+# Verify changeset exists
+ls .changeset/*.md | grep -v README
 
-# Verify package contents
-npm pack your-package
-tar -tzf your-package-*.tgz
+# Verify package on npm
+npm view @scope/package-name version
 
-# Test installation
-cd /tmp && npm init -y && npm install your-package
+# Verify provenance
+npm view @scope/package-name --json | jq '.provenance'
 ```
 
 ## References
 
-- `references/package-config.md` - Detailed package.json configuration
-- `references/monorepo.md` - Publishing from monorepos
+- `references/monorepo-setup.md` - pnpm + Turborepo + Changesets setup
+- `references/changesets.md` - Changeset creation and configuration
+- `references/trusted-publishing.md` - NPM OIDC setup
+- `references/ci-workflows.md` - GitHub Actions configuration
+- `references/package-config.md` - package.json best practices

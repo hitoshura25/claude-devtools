@@ -35,6 +35,7 @@ This plugin complements [Superpowers](https://github.com/obra/superpowers) for m
 
 | Command | Purpose |
 |---------|---------|
+| `/devtools:help` | List all available skills and usage examples |
 | `/devtools:quality-check` | Run all quality gates on current changes |
 | `/devtools:develop` | Start feature development with planning and TDD |
 
