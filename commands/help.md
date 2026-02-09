@@ -12,6 +12,9 @@ Show available quality gates, workflows, and usage examples.
 |---------|---------|
 | `/devtools:quality-check` | Run all quality gates on current changes |
 | `/devtools:develop` | Start feature development with planning and TDD |
+| `/devtools:plan` | Design feature and produce agent-ready task files for local models |
+| `/devtools:agent-ready` | Break existing plan into standalone task files for local agents |
+| `/devtools:sera` | Delegate implementation task to local SERA model via Goose |
 | `/devtools:help` | Show this help (you're here) |
 
 ## Quality Gate Skills
@@ -53,6 +56,11 @@ No exceptions. No "will fix later."
 **Start a new feature:**
 ```
 /devtools:develop Add user authentication
+```
+
+**Plan for local agent execution:**
+```
+/devtools:plan Add user authentication
 ```
 
 **Use a specific skill:**
