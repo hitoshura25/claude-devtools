@@ -133,16 +133,22 @@ claude-devtools/
 │   ├── hooks.json            # Session start hook
 │   └── session-init.md       # Context injected at session start
 ├── skills/
-│   ├── quality-gates/
-│   │   ├── lint-typescript/
-│   │   ├── lint-python/
-│   │   ├── lint-kotlin/
-│   │   ├── security-scanning/
-│   │   └── ai-code-review/
-│   ├── workflows/
-│   │   ├── android-release/
-│   │   ├── npm-publish/
-│   │   └── pypi-publish/
+│   ├── ai-code-review/
+│   ├── agent-ready-plans/
+│   ├── airflow-dag/
+│   ├── android-release/
+│   ├── implementing-with-sera/
+│   ├── kafka-streaming/
+│   ├── lint-kotlin/
+│   ├── lint-python/
+│   ├── lint-terraform/
+│   ├── lint-typescript/
+│   ├── local-kubernetes/
+│   ├── mlflow-tracking/
+│   ├── npm-publish/
+│   ├── passkey-auth/
+│   ├── pypi-publish/
+│   ├── security-scanning/
 │   └── version-management/
 └── README.md
 ```

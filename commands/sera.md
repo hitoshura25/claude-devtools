@@ -36,7 +36,7 @@ command -v goose
 test -f ~/.config/goose/custom_providers/sera_mlx.json
 
 # Check 3: Server script exists?
-test -f ~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-server.sh
+test -f ~/claude-devtools/skills/implementing-with-sera/scripts/sera-server.sh
 ```
 
 **If any check fails: STOP AND ASK USER**
@@ -61,7 +61,7 @@ test -f ~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-s
 
 **Then STOP. Wait for user response before doing anything else.**
 
-- User says "setup" / "option 1" → Run `~/claude-devtools/skills/workflows/implementing-with-sera/scripts/setup.sh`
+- User says "setup" / "option 1" → Run `~/claude-devtools/skills/implementing-with-sera/scripts/setup.sh`
 - User says "implement" / "option 2" / "Claude" → Implement directly
 - User says something unclear → Ask for clarification
 
@@ -70,8 +70,8 @@ test -f ~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-s
 ### Step 2: Start Server If Needed
 
 ```bash
-~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-server.sh status \
-  || ~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-server.sh start
+~/claude-devtools/skills/implementing-with-sera/scripts/sera-server.sh status \
+  || ~/claude-devtools/skills/implementing-with-sera/scripts/sera-server.sh start
 ```
 
 Wait for: "✅ SERA server started successfully"
@@ -121,7 +121,7 @@ Section: [Relevant section]
 ### Step 6: Execute
 
 ```bash
-~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-run.sh /tmp/sera-task-context.md
+~/claude-devtools/skills/implementing-with-sera/scripts/sera-run.sh /tmp/sera-task-context.md
 ```
 
 ### Step 7: Handle Result
@@ -166,13 +166,13 @@ Section: [Relevant section]
 
 ```bash
 # Stop server (free 24GB RAM)
-~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-server.sh stop
+~/claude-devtools/skills/implementing-with-sera/scripts/sera-server.sh stop
 
 # Check status
-~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-server.sh status
+~/claude-devtools/skills/implementing-with-sera/scripts/sera-server.sh status
 
 # View logs
-~/claude-devtools/skills/workflows/implementing-with-sera/scripts/sera-server.sh logs
+~/claude-devtools/skills/implementing-with-sera/scripts/sera-server.sh logs
 ```
 
 ## When NOT to Delegate

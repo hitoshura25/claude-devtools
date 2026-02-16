@@ -25,17 +25,17 @@ From file extensions:
 
 **For each detected platform:**
 
-- **TypeScript/JavaScript:** Use skill `quality-gates/lint-typescript`
-- **Python:** Use skill `quality-gates/lint-python`
-- **Kotlin:** Use skill `quality-gates/lint-kotlin`
+- **TypeScript/JavaScript:** Use skill `lint-typescript`
+- **Python:** Use skill `lint-python`
+- **Kotlin:** Use skill `lint-kotlin`
 
 ### 4. Run Security Scan
 
-**All platforms:** Use skill `quality-gates/security-scanning`
+**All platforms:** Use skill `security-scanning`
 
 ### 5. Run AI Review (if available)
 
-**If Ollama is running:** Use skill `quality-gates/ai-code-review`
+**If Ollama is running:** Use skill `ai-code-review`
 
 ## Output Format
 

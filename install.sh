@@ -1,7 +1,12 @@
 #!/bin/bash
 # Install claude-devtools v2 with symlinks (default) or copying (optional)
 #
-# This script installs skills and commands globally for all projects.
+# This script is idempotent — every run cleans up previous devtools installations
+# and reinstalls fresh. Just run it again whenever you add/remove/update skills.
+#
+# Skills are symlinked FLAT into ~/.claude/skills/<skill-name>/ so Claude Code
+# discovers them at the expected depth (one level under ~/.claude/skills/).
+#
 # For full plugin features (hooks, marketplace), use the plugin system instead:
 #   /plugin marketplace add ~/claude-devtools
 #   /plugin install devtools@devtools-dev
@@ -25,50 +30,28 @@ while [[ $# -gt 0 ]]; do
       INSTALL_METHOD="copy"
       shift
       ;;
-    --uninstall)
-      echo "=================================="
-      echo "Claude DevTools Uninstallation"
-      echo "=================================="
-      echo ""
-      
-      if [ -L ~/.claude/skills/user/devtools ] || [ -d ~/.claude/skills/user/devtools ]; then
-        rm -rf ~/.claude/skills/user/devtools
-        echo -e "${GREEN}✓${NC} Removed skills from ~/.claude/skills/user/devtools/"
-      else
-        echo -e "${YELLOW}⊘${NC} No skills installation found"
-      fi
-      
-      if [ -L ~/.claude/commands/devtools ] || [ -d ~/.claude/commands/devtools ]; then
-        rm -rf ~/.claude/commands/devtools
-        echo -e "${GREEN}✓${NC} Removed commands from ~/.claude/commands/devtools/"
-      else
-        echo -e "${YELLOW}⊘${NC} No commands installation found"
-      fi
-      
-      echo ""
-      echo -e "${GREEN}Uninstallation complete${NC}"
-      exit 0
-      ;;
     --help)
       cat << EOF
 Usage: ./install.sh [OPTIONS]
 
 Install claude-devtools v2 skills and commands globally for all projects.
+Idempotent — safe to run repeatedly. Each run cleans up previous installations
+and reinstalls fresh.
 
 OPTIONS:
   --copy       Copy files instead of symlinking (default: symlink)
-  --uninstall  Remove existing installation
   --help       Show this help message
 
 EXAMPLES:
   ./install.sh              # Install with symlinks (recommended)
   ./install.sh --copy       # Install with copies (independent)
-  ./install.sh --uninstall  # Remove installation
 
 WHAT IT DOES:
-  - Installs skills to ~/.claude/skills/user/devtools/
+  - Cleans up any previous devtools installation (flat or legacy)
+  - Installs each skill FLAT into ~/.claude/skills/<skill-name>/
+    (Claude Code expects skills one level deep under ~/.claude/skills/)
   - Installs commands to ~/.claude/commands/devtools/
-  
+
   Commands appear as:
     /devtools:quality-check
     /devtools:develop
@@ -78,16 +61,12 @@ SYMLINK vs COPY:
     ✓ Updates propagate automatically when you git pull
     ✓ Single source of truth
     ✓ Easy to track changes
-    
+    ✓ Edits are picked up by Claude Code without reinstalling
+
   Copy (--copy flag):
     ✓ Independent installation
     ✓ Won't change if you update the repo
     ✓ Useful for customization
-
-PLUGIN INSTALLATION (Alternative):
-  For full plugin features including session hooks, use:
-    /plugin marketplace add ~/claude-devtools
-    /plugin install devtools@devtools-dev
 
 After installation, commands work in ALL projects automatically!
 EOF
@@ -119,19 +98,61 @@ if [ ! -d "$SCRIPT_DIR/commands" ]; then
     exit 1
 fi
 
+# ── Cleanup previous installation ─────────────────────────────
+echo -e "${BLUE}Cleaning up previous installation...${NC}"
+
+CLEANED=false
+
+# Remove flat symlinks/copies pointing into our repo
+if [ -d ~/.claude/skills ]; then
+    for entry in ~/.claude/skills/*/; do
+        [ -d "$entry" ] || continue
+        entry_path="${entry%/}"
+        entry_name=$(basename "$entry_path")
+        # Only touch entries with our devtools- prefix or symlinks pointing into our repo
+        if [ -L "$entry_path" ]; then
+            link_target=$(readlink "$entry_path")
+            if [[ "$link_target" == "$SCRIPT_DIR/skills/"* ]]; then
+                rm "$entry_path"
+                CLEANED=true
+            fi
+        fi
+    done
+fi
+
+# Remove legacy nested structure
+if [ -L ~/.claude/skills/user/devtools ] || [ -d ~/.claude/skills/user/devtools ]; then
+    rm -rf ~/.claude/skills/user/devtools
+    rmdir ~/.claude/skills/user 2>/dev/null || true
+    echo -e "${GREEN}✓${NC} Removed legacy installation from ~/.claude/skills/user/devtools/"
+    CLEANED=true
+fi
+
+# Remove existing commands
+if [ -L ~/.claude/commands/devtools ] || [ -d ~/.claude/commands/devtools ]; then
+    rm -rf ~/.claude/commands/devtools
+    CLEANED=true
+fi
+
+if [ "$CLEANED" = true ]; then
+    echo -e "${GREEN}✓${NC} Previous installation cleaned up"
+else
+    echo -e "  No previous installation found"
+fi
+
+echo ""
+
+# ── Collect skills ─────────────────────────────────────────────
+SKILL_DIRS=()
+while IFS= read -r -d '' skill_md; do
+    SKILL_DIRS+=("$(dirname "$skill_md")")
+done < <(find "$SCRIPT_DIR/skills" -name "SKILL.md" -print0)
+
 # Show what will be installed
-echo -e "${BLUE}Skills to install:${NC}"
-for skill_dir in "$SCRIPT_DIR/skills"/*/*/; do
-    if [ -f "${skill_dir}SKILL.md" ]; then
-        skill_name=$(basename "$skill_dir")
-        echo "  • $skill_name"
-    fi
-done
-for skill_dir in "$SCRIPT_DIR/skills"/*/; do
-    if [ -f "${skill_dir}SKILL.md" ]; then
-        skill_name=$(basename "$skill_dir")
-        echo "  • $skill_name"
-    fi
+echo -e "${BLUE}Skills to install (${#SKILL_DIRS[@]} skills, flat into ~/.claude/skills/):${NC}"
+for skill_dir in "${SKILL_DIRS[@]}"; do
+    skill_name=$(basename "$skill_dir")
+    echo "  • $skill_name"
 done
 
 echo ""
@@ -144,96 +165,109 @@ for cmd_file in "$SCRIPT_DIR/commands"/*.md; do
 done
 echo ""
 
-# Create directories if they don't exist
-mkdir -p ~/.claude/skills/user
+# ── Install ────────────────────────────────────────────────────
+mkdir -p ~/.claude/skills
 mkdir -p ~/.claude/commands
 
-# Remove existing installations
-if [ -L ~/.claude/skills/user/devtools ] || [ -d ~/.claude/skills/user/devtools ]; then
-    echo -e "${YELLOW}Existing skills installation found at ~/.claude/skills/user/devtools/${NC}"
-    read -p "Remove and reinstall? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "Removing existing skills installation..."
-        rm -rf ~/.claude/skills/user/devtools
-    else
-        echo -e "${RED}Installation cancelled.${NC}"
-        exit 1
-    fi
-fi
+INSTALLED_SKILLS=()
 
-if [ -L ~/.claude/commands/devtools ] || [ -d ~/.claude/commands/devtools ]; then
-    echo -e "${YELLOW}Existing commands installation found at ~/.claude/commands/devtools/${NC}"
-    read -p "Remove and reinstall? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "Removing existing commands installation..."
-        rm -rf ~/.claude/commands/devtools
-    else
-        echo -e "${RED}Installation cancelled.${NC}"
-        exit 1
-    fi
-fi
-
-echo ""
-
-# Install based on method
 if [[ "$INSTALL_METHOD" == "symlink" ]]; then
-    echo -e "${GREEN}Installing with symlinks...${NC}"
+    echo -e "${GREEN}Installing skills with symlinks (flat)...${NC}"
     echo ""
-    
-    # Symlink skills
-    ln -s "$SCRIPT_DIR/skills" ~/.claude/skills/user/devtools
-    echo -e "${GREEN}✓${NC} Skills symlinked to ~/.claude/skills/user/devtools/"
-    
-    # Symlink commands (the whole commands directory becomes devtools/)
+
+    for skill_dir in "${SKILL_DIRS[@]}"; do
+        skill_name="devtools-$(basename "$skill_dir")"
+        target=~/.claude/skills/"$skill_name"
+
+        # Check for name collision with non-devtools content
+        if [ -e "$target" ] && [ ! -L "$target" ]; then
+            echo -e "${YELLOW}⚠  COLLISION: Skipping '$skill_name' — a non-symlink directory already exists at $target${NC}"
+            echo -e "   ${YELLOW}This is NOT a devtools-managed skill. Remove it manually if you want devtools to manage it.${NC}"
+            continue
+        fi
+
+        # Check for symlink owned by something else
+        if [ -L "$target" ]; then
+            link_target=$(readlink "$target")
+            if [[ "$link_target" != "$SCRIPT_DIR/skills/"* ]]; then
+                echo -e "${YELLOW}⚠  COLLISION: Skipping '$skill_name' — symlink exists pointing to $link_target (not managed by devtools)${NC}"
+                continue
+            fi
+            rm "$target"
+        fi
+
+        ln -s "$skill_dir" "$target"
+        INSTALLED_SKILLS+=("$skill_name")
+        echo -e "${GREEN}✓${NC} $skill_name → $skill_dir"
+    done
+
+    echo ""
+
+    # Symlink commands
     ln -s "$SCRIPT_DIR/commands" ~/.claude/commands/devtools
     echo -e "${GREEN}✓${NC} Commands symlinked to ~/.claude/commands/devtools/"
-    
+
     echo ""
-    echo -e "${GREEN}Installation complete (symlinked)${NC}"
-    echo -e "${YELLOW}Updates will automatically propagate when you git pull${NC}"
-    
+    echo -e "${GREEN}Installation complete (symlinked, flat)${NC}"
+    echo -e "${YELLOW}Updates propagate automatically — just edit files and restart Claude Code${NC}"
+
 else
-    echo -e "${GREEN}Installing with copies...${NC}"
+    echo -e "${GREEN}Installing skills with copies (flat)...${NC}"
     echo ""
-    
-    # Copy skills
-    cp -r "$SCRIPT_DIR/skills" ~/.claude/skills/user/devtools
-    echo -e "${GREEN}✓${NC} Skills copied to ~/.claude/skills/user/devtools/"
-    
+
+    for skill_dir in "${SKILL_DIRS[@]}"; do
+        skill_name="devtools-$(basename "$skill_dir")"
+        target=~/.claude/skills/"$skill_name"
+
+        if [ -e "$target" ] && [ ! -L "$target" ]; then
+            echo -e "${YELLOW}⚠  COLLISION: Skipping '$skill_name' — a directory already exists at $target${NC}"
+            echo -e "   ${YELLOW}Remove it manually if you want devtools to manage it.${NC}"
+            continue
+        fi
+
+        # Remove stale symlink if present
+        if [ -L "$target" ]; then
+            rm "$target"
+        fi
+
+        cp -r "$skill_dir" "$target"
+        INSTALLED_SKILLS+=("$skill_name")
+        echo -e "${GREEN}✓${NC} $skill_name → copied"
+    done
+
+    echo ""
+
     # Copy commands
     cp -r "$SCRIPT_DIR/commands" ~/.claude/commands/devtools
     echo -e "${GREEN}✓${NC} Commands copied to ~/.claude/commands/devtools/"
-    
+
     echo ""
-    echo -e "${GREEN}Installation complete (copied)${NC}"
-    echo -e "${YELLOW}This is an independent copy - updates won't auto-propagate${NC}"
+    echo -e "${GREEN}Installation complete (copied, flat)${NC}"
+    echo -e "${YELLOW}This is an independent copy — updates won't auto-propagate${NC}"
 fi
 
-# Verify installation
+# ── Verify ─────────────────────────────────────────────────────
 echo ""
 echo "Verifying installation..."
 
 VERIFY_FAILED=0
+VERIFY_COUNT=0
 
-# Check for a quality-gates skill
-if [ -d ~/.claude/skills/user/devtools/quality-gates/lint-typescript ]; then
-    echo -e "${GREEN}✓${NC} Quality gate skills installed"
+for skill_name in "${INSTALLED_SKILLS[@]}"; do
+    if [ -f ~/.claude/skills/"$skill_name"/SKILL.md ]; then
+        VERIFY_COUNT=$((VERIFY_COUNT + 1))
+    else
+        echo -e "${RED}✗${NC} Skill not found: $skill_name"
+        VERIFY_FAILED=1
+    fi
+done
+
+if [ $VERIFY_FAILED -eq 0 ]; then
+    echo -e "${GREEN}✓${NC} All $VERIFY_COUNT skills verified in ~/.claude/skills/"
 else
-    echo -e "${RED}✗${NC} Quality gate skills not found"
-    VERIFY_FAILED=1
+    echo -e "${RED}Some skills failed verification${NC}"
 fi
 
-# Check for workflow skills
-if [ -d ~/.claude/skills/user/devtools/workflows/npm-publish ]; then
-    echo -e "${GREEN}✓${NC} Workflow skills installed"
-else
-    echo -e "${RED}✗${NC} Workflow skills not found"
-    VERIFY_FAILED=1
-fi
-
-# Check for commands
 if [ -f ~/.claude/commands/devtools/quality-check.md ]; then
     echo -e "${GREEN}✓${NC} Commands installed"
 else
@@ -247,31 +281,17 @@ if [ $VERIFY_FAILED -eq 1 ]; then
     exit 1
 fi
 
-# Show available commands and skills
+# ── Summary ────────────────────────────────────────────────────
 echo ""
 echo "=================================="
-echo "Available Commands"
+echo "Installed Skills (${#INSTALLED_SKILLS[@]})"
 echo "=================================="
 echo ""
-echo -e "${BLUE}Commands:${NC}"
-echo "  /devtools:help           - List all skills and usage examples"
-echo "  /devtools:quality-check  - Run all quality gates (lint, security, AI review)"
-echo "  /devtools:develop        - Full feature development with planning and TDD"
-echo ""
-echo -e "${BLUE}Quality Gate Skills:${NC}"
-echo "  lint-typescript          - ESLint + Prettier for TypeScript/JavaScript"
-echo "  lint-python              - Ruff for Python"
-echo "  lint-kotlin              - ktlint for Kotlin/Android"
-echo "  security-scanning        - Semgrep + OSV-Scanner"
-echo "  ai-code-review           - Local AI review via Ollama"
-echo ""
-echo -e "${BLUE}Workflow Skills:${NC}"
-echo "  npm-publish              - npm publishing with Changesets (monorepo support)"
-echo "  pypi-publish             - PyPI publishing with Trusted Publishers"
-echo "  android-release          - Play Store deployment with Fastlane"
-echo "  version-management       - Semantic versioning with git tags"
-echo ""
+for skill_name in "${INSTALLED_SKILLS[@]}"; do
+    echo "  ~/.claude/skills/$skill_name/"
+done
 
+echo ""
 echo "=================================="
 echo "Next Steps"
 echo "=================================="
@@ -283,8 +303,8 @@ echo "   cd your-project"
 echo "   claude"
 echo "   > /devtools:help"
 echo ""
-echo "3. See all commands: /help"
-echo "   (Look for 'devtools' commands)"
+echo "3. Skills are now directly in ~/.claude/skills/ — Claude Code"
+echo "   will discover them at the expected depth."
 echo ""
 echo -e "${GREEN}Installation successful!${NC}"
 echo ""
