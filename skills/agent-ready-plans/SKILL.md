@@ -54,13 +54,9 @@ docs/plans/airflow-google-drive-ingestion-tasks/
 
 ## Execution Strategy
 
-Parallel agents may be used to speed up generation, but prefer sequential file creation as the default. If using parallel agents:
-- Keep batches small (3-4 tasks per agent max)
-- Each agent must write its files to disk before completing — do not accumulate files in memory
-- After each batch completes, confirm the files exist on disk and report progress to the user
-- If any agent fails or produces no output, fall back to sequential generation for the remaining tasks
+**Do NOT use subagents or parallel Task agents to generate task files.** Subagents have restricted permissions and frequently fail to write files, causing partial output that requires manual recovery.
 
-Always show progress as files are created:
+Generate all task files sequentially in the main session. Write each file to disk immediately before moving to the next. Show progress as files are created:
 ```
 Creating 01-task-1.1-create-service-directory.md... ✓
 Creating 02-task-1.2-create-requirements-file.md... ✓
