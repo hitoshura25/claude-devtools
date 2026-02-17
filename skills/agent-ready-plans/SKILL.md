@@ -149,8 +149,8 @@ Create `run-tasks.sh` — a bash script that executes each task via aider sequen
 set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────
-LM_STUDIO_API_KEY=dummy-api-key 
-LM_STUDIO_API_BASE=http://localhost:1234/v1
+export LM_STUDIO_API_KEY=dummy-api-key 
+export LM_STUDIO_API_BASE=http://localhost:1234/v1
 TASKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$TASKS_DIR/../../.." && pwd)"
 DEFAULT_MODEL="lm_studio/qwen/qwen3-coder-30b"
