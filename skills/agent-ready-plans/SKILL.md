@@ -27,8 +27,8 @@ Example: `docs/plans/2026-01-29-airflow-google-drive-ingestion-implementation.md
 ```
 docs/plans/airflow-google-drive-ingestion-tasks/
 ├── 00-manifest.json
-├── 01-task-0.0-test-lint-setup.md
-├── 02-task-1.1-create-service-directory.md
+├── 01-task-1.1-create-service-directory.md
+├── 02-task-1.2-create-requirements-file.md
 ├── ...
 └── run-tasks.sh
 ```
@@ -47,13 +47,15 @@ Identify the lint and test commands for the project. These power aider's `--auto
 
 Read `references/tooling.md` for common commands by language and the manifest format.
 
-### 3. Generate Task 01 — Test & Lint Setup
+### 3. Set Up Test & Lint Tooling (execute directly)
 
-The first task always sets up test and lint infrastructure. Every subsequent task runs with auto-lint and auto-test enabled, so the tooling must exist before anything else runs. If the tooling isn't set up, every task after this one will fail at the validation step.
+This is the most important step for reliability. Install and configure the test framework and linter *right now*, directly in the current Claude Code session — do not delegate this to a task file for the small model.
 
-Read `references/tooling.md` for the Task 01 template and a worked Python example.
+Small models can write code that passes lint and tests, but they can't debug missing tool installations, broken configs, or environment issues. Claude Code can. By handling setup here, every subsequent task starts with working tooling.
 
-If the implementation plan already includes a test/lint setup task, promote it to task 01 rather than generating a duplicate.
+Read `references/tooling.md` for the full discovery and setup process. The key idea: investigate the project's existing conventions first (package manager, virtual environment, monorepo structure), then set up tooling in a way that's consistent with what's already there. If the project uses uv, use uv. If it uses poetry, use poetry. If there's no existing convention, ask the user.
+
+After setup, verify both commands pass, commit the result, and tell the user what you did.
 
 ### 4. Extract Project Context
 
@@ -65,7 +67,7 @@ Include: what the project does (1-2 sentences), tech stack, key directory struct
 
 For each task in the implementation plan, generate a standalone markdown file. Read `task-template.md` for the complete template structure.
 
-**Naming:** `NN-task-X.Y-short-description.md` where NN is the zero-padded execution order (starting from 02), X.Y is the original task number, and the description is kebab-case.
+**Naming:** `NN-task-X.Y-short-description.md` where NN is the zero-padded execution order (starting from 01), X.Y is the original task number, and the description is kebab-case.
 
 Key principles for task docs — these matter because small models can't infer what you mean, they need everything spelled out:
 
@@ -88,7 +90,7 @@ Create `00-manifest.json` with task metadata and a `tooling` section:
   "plan_source": "docs/plans/...-implementation.md",
   "design_source": "docs/plans/...-design.md",
   "generated_at": "2026-01-29T18:00:00Z",
-  "total_tasks": 26,
+  "total_tasks": 25,
   "tooling": {
     "lint_cmd": "ruff check .",
     "test_cmd": "cd services/airflow-ingestion && python -m pytest -x -q",
@@ -98,13 +100,13 @@ Create `00-manifest.json` with task metadata and a `tooling` section:
   },
   "tasks": [
     {
-      "file": "01-task-0.0-test-lint-setup.md",
-      "task_id": "0.0",
-      "title": "Test & Lint Setup",
+      "file": "01-task-1.1-create-service-directory.md",
+      "task_id": "1.1",
+      "title": "Create Service Directory Structure",
       "phase": "Project Scaffolding",
       "files_created": ["..."],
       "files_modified": [],
-      "test_command": "python -m pytest tests/test_smoke.py -v",
+      "test_command": null,
       "estimated_complexity": "simple"
     }
   ]
@@ -128,14 +130,13 @@ The runner:
 Summarize what was generated:
 
 ```
-Generated 26 task files + manifest + runner in docs/plans/airflow-google-drive-ingestion-tasks/
+Generated 25 task files + manifest + runner in docs/plans/airflow-google-drive-ingestion-tasks/
 
-Tooling:
+Tooling (installed and verified):
   Lint: ruff check . (--auto-lint enabled)
   Test: python -m pytest -x -q (--auto-test enabled)
 
 Phase breakdown:
-  Task 01: Test & Lint Setup      — pytest + ruff (runs first)
   Phase 1: Project Scaffolding    — 3 tasks (simple)
   Phase 2: Google Drive Client    — 1 task (moderate)
   ...
@@ -152,8 +153,8 @@ To run:
 
 Generate task files sequentially in the main session. Write each file to disk before moving to the next — subagents have permission issues that cause partial output and require manual recovery. Show progress:
 ```
-Creating 01-task-0.0-test-lint-setup.md... ✓
-Creating 02-task-1.1-create-service-directory.md... ✓
+Creating 01-task-1.1-create-service-directory.md... ✓
+Creating 02-task-1.2-create-requirements-file.md... ✓
 ```
 
 ## Bundled Resources
@@ -161,6 +162,6 @@ Creating 02-task-1.1-create-service-directory.md... ✓
 | Resource | When to read |
 |----------|-------------|
 | `task-template.md` | When generating task documents (Step 5) — has the complete template with all sections |
-| `references/tooling.md` | When determining lint/test commands (Step 2) and generating Task 01 (Step 3) |
+| `references/tooling.md` | When determining lint/test commands (Step 2) and setting up tooling (Step 3) |
 | `references/writing-guide.md` | When writing task doc content — style guidance, splitting rules, complexity ratings |
 | `scripts/run-tasks-template.sh` | When generating the runner script (Step 7) — copy and adapt for the project |

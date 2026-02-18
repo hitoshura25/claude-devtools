@@ -11,86 +11,120 @@ The runner script passes four aider flags that create an automatic validation lo
 
 When aider can't fix a lint/test failure after several attempts, it exits non-zero. The runner halts and tells the user which task failed and how to resume.
 
-## Common Tooling by Language
+## Discovering the Right Setup
 
-| Language | Lint Command | Test Command |
-|----------|-------------|-------------|
-| Python | `ruff check .` | `python -m pytest -x -q` |
-| Kotlin | `./gradlew ktlintCheck` | `./gradlew test` |
-| TypeScript | `npx eslint .` | `npx jest` or `npx vitest run` |
-| Rust | `cargo clippy` | `cargo test` |
-| Go | `golangci-lint run` | `go test ./...` |
+Every project manages dependencies and tooling differently. Rather than assuming a particular approach, investigate the project first and then set up tooling in a way that's consistent with what's already there.
 
-## Task 01: Test & Lint Setup
+### Step 1: Investigate the Project
 
-The first task in every plan sets up the test and lint infrastructure. This matters because all subsequent tasks use `--auto-lint` and `--auto-test` — if the tooling isn't configured, every task fails before it starts.
+Before installing anything, check what already exists. Look for these signals:
 
-Task 01 should:
+**Package manager indicators:**
+- `pyproject.toml` with `[tool.uv]` or `uv.lock` → project uses **uv**
+- `pyproject.toml` with `[tool.poetry]` or `poetry.lock` → project uses **poetry**
+- `Pipfile` or `Pipfile.lock` → project uses **pipenv**
+- `requirements.txt` only → project uses plain **pip** (consider suggesting uv)
+- `setup.py` / `setup.cfg` → older Python project, likely pip-based
+- `package.json` → Node.js, check for npm/yarn/pnpm lockfiles
+- `build.gradle` / `build.gradle.kts` → Kotlin/Java with Gradle
+- `Cargo.toml` → Rust with cargo
 
-1. Install/configure the test framework (e.g. pytest + conftest.py, jest + config)
-2. Install/configure the linter (e.g. ruff section in pyproject.toml, eslint + .eslintrc)
-3. Create a minimal smoke test that proves the toolchain works
-4. Verify both commands exit successfully
+**Virtual environment indicators:**
+- `.venv/` or `venv/` in the project or service directory → existing venv
+- `.python-version` → pyenv or uv-managed Python version
+- `Dockerfile` with `pip install` → containerized, might not need local venv
 
-If the implementation plan already includes a test/lint setup task, use it as Task 01 — just make sure lint and test commands are validated at the end.
+**Monorepo indicators:**
+- Multiple `pyproject.toml` files in different subdirectories → per-service environments
+- Top-level `pyproject.toml` with workspace config → monorepo workspace
+- `services/`, `packages/`, or `apps/` directory structure → multi-service layout
 
-### Python Example
+**Existing tooling:**
+- `[tool.ruff]` section in pyproject.toml → ruff already configured
+- `[tool.pytest.ini_options]` → pytest already configured
+- `.eslintrc.*` / `eslint.config.*` → ESLint configured
+- `jest.config.*` / `vitest.config.*` → test runner configured
 
-```markdown
-# Task 01: Test & Lint Setup
+### Step 2: Determine the Scope
 
-> **Phase:** Project Scaffolding
-> **Original Task:** 0.0 (generated)
-> **Complexity:** simple
+For a monorepo, tooling setup belongs to the specific service being implemented, not the root. Check the implementation plan — it usually specifies a service directory (e.g. `services/airflow-ingestion/`).
 
-## Project Context
-[standard context block]
+Ask: where should the virtual environment and config live?
 
-## Objective
-Set up pytest and ruff so that all subsequent tasks are automatically validated.
+| Project Structure | Environment Scope | Config Location |
+|---|---|---|
+| Single project | Project root | `./pyproject.toml` |
+| Monorepo, per-service | Service directory | `services/my-service/pyproject.toml` |
+| Monorepo, shared workspace | Project root with workspaces | Root `pyproject.toml` with workspace members |
 
-## Files to Create
-- `services/airflow-ingestion/pyproject.toml`
-- `services/airflow-ingestion/tests/__init__.py`
-- `services/airflow-ingestion/tests/conftest.py`
-- `services/airflow-ingestion/tests/test_smoke.py`
+### Step 3: Set Up in a Way That Matches the Project
 
-## Instructions
+Use whatever package manager the project already uses. If there's no existing convention, prefer uv for new Python projects (it's faster and handles Python versions), but ask the user if uncertain.
 
-### Step 1: Create pyproject.toml with test and lint config
-Create `services/airflow-ingestion/pyproject.toml`:
-[full file content with pytest and ruff sections]
+**Python with uv:**
+```bash
+cd services/airflow-ingestion
+uv init --python 3.11          # if no pyproject.toml exists yet
+uv add --dev ruff pytest       # adds to [dependency-groups] dev
+uv run ruff check .            # verify lint
+uv run pytest tests/ -v        # verify tests
+```
+The runner's lint/test commands would then be prefixed with `uv run`:
+- lint_cmd: `cd services/airflow-ingestion && uv run ruff check .`
+- test_cmd: `cd services/airflow-ingestion && uv run pytest -x -q`
 
-### Step 2: Create test directory and conftest
-Create `services/airflow-ingestion/tests/__init__.py` (empty)
-Create `services/airflow-ingestion/tests/conftest.py`:
-[conftest with shared fixtures]
+**Python with pip + venv:**
+```bash
+cd services/airflow-ingestion
+python -m venv .venv
+source .venv/bin/activate
+pip install ruff pytest
+ruff check .
+pytest tests/ -v
+```
+The runner needs the venv activated, so commands become:
+- lint_cmd: `cd services/airflow-ingestion && source .venv/bin/activate && ruff check .`
+- test_cmd: `cd services/airflow-ingestion && source .venv/bin/activate && pytest -x -q`
 
-### Step 3: Create smoke test
-Create `services/airflow-ingestion/tests/test_smoke.py`:
-[minimal test that asserts True — proves pytest works]
-
-### Step 4: Verify toolchain
-Run:
-  ruff check services/airflow-ingestion/
-  cd services/airflow-ingestion && python -m pytest tests/test_smoke.py -v
-
-Expected: lint passes with 0 errors, 1 test passes.
-
-### Step 5: Commit
-git add services/airflow-ingestion/pyproject.toml services/airflow-ingestion/tests/
-git commit -m "chore: set up pytest and ruff for airflow-ingestion service"
+**Python with poetry:**
+```bash
+cd services/airflow-ingestion
+poetry add --group dev ruff pytest
+poetry run ruff check .
+poetry run pytest tests/ -v
 ```
 
-## Manifest Tooling Section
+**TypeScript with npm:**
+```bash
+npm install -D eslint jest @types/jest ts-jest
+npx eslint .
+npx jest
+```
 
-The manifest's `tooling` block tells the runner script which commands to use:
+**Kotlin with Gradle:**
+```kotlin
+// build.gradle.kts — add ktlint plugin
+plugins { id("org.jlleitschuh.gradle.ktlint") }
+```
+
+### Step 4: Create Minimal Test Infrastructure
+
+After tools are installed, create the minimum needed to prove they work:
+
+1. **Config file** — if one doesn't exist, create it with lint and test sections appropriate to the project's conventions
+2. **Test directory** — `tests/__init__.py`, `tests/conftest.py` (or equivalent)
+3. **Smoke test** — a trivial test that verifies the test runner works
+4. **Run and verify** — both lint and test commands must exit 0
+
+### Step 5: Record the Commands
+
+Once verified, the lint and test commands go into the manifest's `tooling` section. These are the exact commands the runner will use — they must work when executed from the project root.
 
 ```json
 {
   "tooling": {
-    "lint_cmd": "ruff check .",
-    "test_cmd": "cd services/airflow-ingestion && python -m pytest -x -q",
+    "lint_cmd": "cd services/airflow-ingestion && uv run ruff check .",
+    "test_cmd": "cd services/airflow-ingestion && uv run pytest -x -q",
     "language": "python",
     "framework": "pytest",
     "linter": "ruff"
@@ -98,4 +132,18 @@ The manifest's `tooling` block tells the runner script which commands to use:
 }
 ```
 
-The runner reads `lint_cmd` and `test_cmd` from this block. CLI flags `--lint-cmd` and `--test-cmd` override these values if provided.
+### If Setup Already Exists
+
+If the project already has working lint and test tooling, don't reinstall — just verify the commands work and record them. The goal is to discover and validate, not to impose.
+
+## Common Tooling by Language
+
+For reference when the project doesn't have existing tooling:
+
+| Language | Linter | Test Framework | Notes |
+|----------|--------|---------------|-------|
+| Python | ruff | pytest | Prefer uv for dependency management in new projects |
+| Kotlin | ktlint (via Gradle plugin) | JUnit (via Gradle) | Managed through build.gradle |
+| TypeScript | ESLint | Jest or Vitest | Managed through package.json |
+| Rust | clippy | cargo test | Built into the toolchain |
+| Go | golangci-lint | go test | Lint needs separate install |
