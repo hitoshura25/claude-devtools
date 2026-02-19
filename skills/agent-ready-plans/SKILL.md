@@ -55,6 +55,10 @@ Small models can write code that passes lint and tests, but they can't debug mis
 
 Read `references/tooling.md` for the full discovery and setup process. The key idea: investigate the project's existing conventions first (package manager, virtual environment, monorepo structure), then set up tooling in a way that's consistent with what's already there. If the project uses uv, use uv. If it uses poetry, use poetry. If there's no existing convention, ask the user.
 
+Two things to get right during setup — both are covered in detail in `references/tooling.md`:
+- The lint command must work from the project root without `cd`, because aider appends edited filenames as arguments and the paths would break after a directory change.
+- The linter config must restrict checking to source files only (e.g. `include = ["*.py", "*.pyi"]` for ruff), because aider also passes non-code files like `requirements.txt` to the lint command, which causes unfixable parse errors that trap the small model in a retry loop.
+
 After setup, verify both commands pass, commit the result, and tell the user what you did.
 
 ### 4. Extract Project Context
@@ -121,9 +125,10 @@ Copy the runner template from `scripts/run-tasks-template.sh` into the output fo
 
 The runner:
 - Reads lint/test commands from the manifest's `tooling` section
-- Passes `--lint-cmd` + `--auto-lint` and `--test-cmd` + `--auto-test` to aider for every task
+- Passes `--lint-cmd` + `--auto-lint` and `--test-cmd` + `--auto-test` explicitly to aider (regardless of defaults, for clarity)
+- Uses `--no-check-update` to prevent aider from self-updating mid-run, and `--yes-always` for non-interactive mode
 - Halts on non-zero exit (meaning aider couldn't fix a lint/test failure) and prints how to resume with `--start N`
-- Supports `--dry-run`, `--model`, `--api-base`, and CLI overrides for `--lint-cmd`/`--test-cmd`
+- Supports `--dry-run`, `--model`, and CLI overrides for `--lint-cmd`/`--test-cmd`
 
 ### 8. Present Results
 

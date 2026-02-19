@@ -6,6 +6,17 @@
 #   - aider installed (pip install aider-chat)
 #   - LMStudio running with model loaded
 #   - Git repo clean (no uncommitted changes)
+#
+# Aider flag reference (from https://aider.chat/docs/config/options.html):
+#   --lint-cmd CMD    Lint command; aider appends edited filenames to it
+#   --auto-lint       Auto-lint after changes (default: TRUE — on by default)
+#   --no-auto-lint    Disable auto-lint
+#   --test-cmd CMD    Test command; aider runs it as-is (no filenames appended)
+#   --auto-test       Auto-test after changes (default: FALSE — must opt in)
+#   --message-file F  Send file content as message, process reply, then exit
+#   --yes-always      Always say yes to every confirmation
+#   --no-git          Disable git integration
+#   --no-check-update Skip checking for aider updates on launch
 
 set -euo pipefail
 
@@ -38,7 +49,6 @@ while [[ $# -gt 0 ]]; do
     --start) START_TASK="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --model) MODEL="$2"; shift 2 ;;
-    --api-base) API_BASE="$2"; shift 2 ;;
     --lint-cmd) LINT_CMD="$2"; shift 2 ;;
     --test-cmd) TEST_CMD="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -61,7 +71,7 @@ echo "║  Task Runner — $TOTAL tasks queued"
 echo "║  Model: $MODEL"
 echo "║  Starting from task: $START_TASK"
 if [[ -n "$LINT_CMD" ]]; then
-  echo "║  Lint: $LINT_CMD (auto-lint ON)"
+  echo "║  Lint: $LINT_CMD (auto-lint is ON by default)"
 fi
 if [[ -n "$TEST_CMD" ]]; then
   echo "║  Test: $TEST_CMD (auto-test ON)"
@@ -90,20 +100,23 @@ for TASK_FILE in "${TASK_FILES[@]}"; do
     continue
   fi
 
+  # Core aider args
   AIDER_ARGS=(
     --model "$MODEL"
     --no-show-model-warnings
+    --no-check-update
     --no-git
     --message-file "$TASK_FILE"
-    --yes
+    --yes-always
   )
 
-  # Add lint with auto-lint if configured
+  # Lint: aider appends edited filenames to lint_cmd, so it must work from project root.
+  # Do NOT use 'cd' in lint_cmd — the appended paths will break after the cd.
   if [[ -n "$LINT_CMD" ]]; then
     AIDER_ARGS+=(--lint-cmd "$LINT_CMD" --auto-lint)
   fi
 
-  # Add test with auto-test if configured
+  # Test: aider runs test_cmd as-is (no filenames appended), so 'cd' is safe here.
   if [[ -n "$TEST_CMD" ]]; then
     AIDER_ARGS+=(--test-cmd "$TEST_CMD" --auto-test)
   fi
@@ -120,7 +133,7 @@ for TASK_FILE in "${TASK_FILES[@]}"; do
   fi
 
   SUCCEEDED=$((SUCCEEDED + 1))
-  echo "✅  Completed: $BASENAME (lint ✓ test ✓)"
+  echo "✅  Completed: $BASENAME"
 done
 
 echo ""
