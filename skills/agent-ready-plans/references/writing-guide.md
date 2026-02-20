@@ -20,6 +20,8 @@ Small models (7B-32B parameters) need a very different instruction style than Cl
 
 **Include tests for every task.** Since the runner enables `--auto-test`, every task needs tests that pass after the code is created. If the original plan doesn't specify tests, write them.
 
+**Always include the output constraint.** Small models often append conversational text like "To test this, run..." or "If you want to run the tests...". Aider's `whole` edit format interprets these as filenames and creates junk files at the project root. Every task's Project Context section must end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.`
+
 ## Task Splitting Guidelines
 
 If a single task from the implementation plan would produce a task doc exceeding ~2000 tokens:

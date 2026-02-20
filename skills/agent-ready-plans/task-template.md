@@ -14,7 +14,10 @@ Every task file follows this structure. The goal: a small model should be able t
 ## Project Context
 
 [Brief context block — 10-15 lines max. Same across all tasks in a plan.
-Include: what the project does, tech stack, directory structure, lint/test commands, conventions.]
+Include: what the project does, tech stack, directory structure, lint/test commands, conventions.
+Always end with the output constraint below.]
+
+**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.
 
 ## Objective
 
@@ -101,10 +104,13 @@ into an existing MinIO + RabbitMQ pipeline.
 
 Tech stack: Python 3.11, Apache Airflow 2.8, Pydantic, pytest, structlog
 Directory: services/airflow-ingestion/
-Lint: ruff check .
+Lint: ruff check . (via lint wrapper)
 Test: cd services/airflow-ingestion && python -m pytest -x -q
 Patterns: TDD (test first), Pydantic Settings, abstract base classes
 Naming: snake_case files, PascalCase classes, conventional commits
+
+**Output constraint:** Respond with ONLY the file changes. Do not include
+explanations, test commands, suggestions, or any conversational text.
 ```
 
 **Too verbose (30+ lines about architecture the model doesn't need):** trim to essentials.

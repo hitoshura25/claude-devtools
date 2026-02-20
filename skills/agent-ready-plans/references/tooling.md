@@ -6,11 +6,11 @@ From the [aider docs](https://aider.chat/docs/usage/lint-test.html) and [options
 
 **Linting:**
 - `--lint-cmd CMD` — defines the lint command. Per aider docs: "The lint command should accept the filenames of the files to lint." Aider appends the edited filenames as arguments.
-- `--auto-lint` — runs lint after each edit. **Defaults to TRUE** — it's on by default, so no flag needed. Use `--no-auto-lint` to disable.
+- `--auto-lint` — runs lint after each edit. **Defaults to TRUE** — we pass it explicitly for clarity.
 
 **Testing:**
 - `--test-cmd CMD` — defines the test command. Per aider docs: "Aider will run the test command without any arguments." No filenames appended.
-- `--auto-test` — runs tests after each edit. **Defaults to FALSE** — must explicitly opt in with `--auto-test`.
+- `--auto-test` — runs tests after each edit. **Defaults to FALSE** — we pass it explicitly to opt in.
 
 When aider can't fix a lint/test failure after several attempts, it exits non-zero. The runner halts and tells the user which task failed and how to resume.
 
@@ -24,52 +24,41 @@ cd services/foo && ruff check . services/foo/bar.py
 
 This breaks because after `cd services/foo`, the path `services/foo/bar.py` doesn't exist (it would be just `bar.py` from that working directory).
 
-The lint command must work from the project root. For monorepos, use a wrapper script or full-path approach instead of `cd`.
+The lint command must work from the project root. For monorepos, use the lint wrapper script instead of `cd`.
 
 Test commands don't have this problem — aider runs them exactly as given, no filenames appended.
 
-### Lint command patterns that work with aider
+### Ruff must be run through the lint wrapper script
 
-**Single project (tools at project root):**
+Aider appends *every* edited filename to the lint command, including non-Python files like `requirements.txt`, `.gitkeep`, `Dockerfile`, etc. Ruff will try to parse these as Python and report syntax errors the small model can never fix — it enters an infinite retry loop.
+
+You might think ruff's `include` or `exclude` config would help, but ruff always lints files passed explicitly on the command line, regardless of config (per ruff docs: "Files that are passed to ruff directly are always linted"). The `force-exclude` setting helps but has edge cases with monorepo subdirectories.
+
+The reliable solution is the lint wrapper script at `scripts/lint-ruff-wrapper.sh`. It:
+1. Filters out non-Python files before they reach ruff
+2. Runs ruff with `--fix` so trivially fixable issues (import sorting, unused imports) are auto-corrected instead of being sent to the small model
+
+Copy the template into the tasks output directory as `lint.sh`, update the `RUFF_BIN` variable to point to the project's ruff binary, and use `./path/to/lint.sh` as the `lint_cmd` in the manifest.
+
+### Lint command patterns
+
+**Single project (ruff on PATH):**
 ```
-lint_cmd: ruff check .
+RUFF_BIN="ruff"
+lint_cmd: ./docs/plans/my-tasks/lint.sh
 ```
 
-**Monorepo with venv (use the venv binary directly with a config path):**
+**Monorepo with venv:**
 ```
-lint_cmd: services/airflow-ingestion/.venv/bin/ruff check services/airflow-ingestion/
+RUFF_BIN="services/airflow-ingestion/.venv/bin/ruff"
+lint_cmd: ./docs/plans/airflow-tasks/lint.sh
 ```
-This works because paths are always relative to project root — aider's appended filenames will also be relative to project root.
 
 **Monorepo with uv:**
 ```
-lint_cmd: uv run --project services/airflow-ingestion ruff check services/airflow-ingestion/
+RUFF_BIN="uv run --project services/airflow-ingestion ruff"
+lint_cmd: ./docs/plans/airflow-tasks/lint.sh
 ```
-
-**Wrapper script approach (most flexible):**
-Create a small `lint.sh` in the tasks output directory:
-```bash
-#!/usr/bin/env bash
-# Lint wrapper — handles path translation for aider's --auto-lint
-# aider appends edited filenames as extra args
-exec services/airflow-ingestion/.venv/bin/ruff check "$@"
-```
-Then: `lint_cmd: ./docs/plans/my-tasks/lint.sh`
-
-When aider appends files, it becomes `./lint.sh services/airflow-ingestion/bar.py` — which works correctly.
-
-### Ruff must be configured to only check Python files
-
-Aider appends *every* edited filename to the lint command, including non-Python files like `requirements.txt`, `.gitkeep`, `Dockerfile`, etc. By default ruff will try to parse these as Python and report syntax errors that the small model can never fix — it enters an infinite retry loop.
-
-When configuring ruff in `pyproject.toml`, always include an explicit `include` directive:
-
-```toml
-[tool.ruff]
-include = ["*.py", "*.pyi"]
-```
-
-This tells ruff to only check Python source files, regardless of what filenames aider passes to it. Non-Python files get silently skipped instead of producing unfixable errors.
 
 ## Discovering the Right Setup
 
@@ -112,17 +101,20 @@ For a monorepo, tooling setup belongs to the specific service, not the root. Che
 | Monorepo, per-service | Service directory | `services/my-service/pyproject.toml` |
 | Monorepo, shared workspace | Project root with workspaces | Root `pyproject.toml` with workspace members |
 
-### Step 3: Set Up Consistently
+### Step 3: Install All Dependencies
 
-Use whatever package manager the project already uses. If no convention exists, prefer uv for new Python projects but ask the user if uncertain.
+Install the project's actual dependencies *in addition to* lint and test tools. Tests will fail with `ModuleNotFoundError` if only ruff and pytest are installed but the project's libraries (e.g. `google-api-python-client`, `pydantic`, `boto3`) are missing.
+
+Use whatever package manager the project uses. If there's no existing convention, prefer uv for new Python projects but ask the user if uncertain.
 
 **Python with uv:**
 ```bash
 cd services/airflow-ingestion
 uv init --python 3.11
 uv add --dev ruff pytest
-uv run ruff check .            # verify
-uv run pytest tests/ -v        # verify
+uv sync                        # installs all deps including dev
+uv run ruff check .            # verify lint
+uv run pytest tests/ -v        # verify tests
 ```
 
 **Python with pip + venv:**
@@ -130,35 +122,48 @@ uv run pytest tests/ -v        # verify
 cd services/airflow-ingestion
 python -m venv .venv
 source .venv/bin/activate
-pip install ruff pytest
-ruff check .                   # verify
-pytest tests/ -v               # verify
+pip install -r requirements.txt  # project dependencies
+pip install ruff pytest          # if not already in requirements
+ruff check .                     # verify lint
+pytest tests/ -v                 # verify tests
 ```
 
 **Python with poetry:**
 ```bash
 cd services/airflow-ingestion
 poetry add --group dev ruff pytest
+poetry install                   # installs all deps
 poetry run ruff check .
 poetry run pytest tests/ -v
 ```
 
 ### Step 4: Create Minimal Test Infrastructure
 
-1. Config file with lint and test sections. For ruff, the config must include `include = ["*.py", "*.pyi"]` so that non-Python files (requirements.txt, .gitkeep, etc.) passed by aider are silently skipped instead of causing unfixable parse errors.
+1. Config file with lint and test sections
 2. Test directory (`tests/__init__.py`, `tests/conftest.py`)
 3. Smoke test that proves the toolchain works
 4. Run and verify both commands exit 0
 
-### Step 5: Record Commands for the Manifest
+### Step 5: Set Up the Lint Wrapper
 
-The lint and test commands must work when executed from the **project root** (where aider runs). Remember: aider appends filenames to the lint command, so avoid `cd` in lint_cmd.
+Copy `scripts/lint-ruff-wrapper.sh` into the tasks output directory as `lint.sh`. Update the `RUFF_BIN` variable to point to the project's ruff binary. Make it executable.
+
+Test it by passing a mix of Python and non-Python files:
+```bash
+chmod +x docs/plans/my-tasks/lint.sh
+./docs/plans/my-tasks/lint.sh services/foo/bar.py services/foo/requirements.txt
+# Should only lint bar.py, skip requirements.txt
+```
+
+### Step 6: Record Commands for the Manifest
+
+The lint command points to the wrapper script. The test command runs directly (since aider doesn't append filenames to it, `cd` is safe).
 
 **Monorepo with venv example:**
 ```json
 {
   "tooling": {
-    "lint_cmd": "services/airflow-ingestion/.venv/bin/ruff check services/airflow-ingestion/",
+    "lint_cmd": "./docs/plans/airflow-tasks/lint.sh",
     "test_cmd": "cd services/airflow-ingestion && .venv/bin/pytest -x -q",
     "language": "python",
     "framework": "pytest",
@@ -167,13 +172,11 @@ The lint and test commands must work when executed from the **project root** (wh
 }
 ```
 
-Note: `lint_cmd` does NOT use `cd` (because aider appends files). `test_cmd` CAN use `cd` (aider runs it as-is).
-
 **Monorepo with uv example:**
 ```json
 {
   "tooling": {
-    "lint_cmd": "uv run --project services/airflow-ingestion ruff check services/airflow-ingestion/",
+    "lint_cmd": "./docs/plans/airflow-tasks/lint.sh",
     "test_cmd": "cd services/airflow-ingestion && uv run pytest -x -q",
     "language": "python",
     "framework": "pytest",
@@ -186,7 +189,7 @@ Note: `lint_cmd` does NOT use `cd` (because aider appends files). `test_cmd` CAN
 ```json
 {
   "tooling": {
-    "lint_cmd": "ruff check .",
+    "lint_cmd": "./docs/plans/my-tasks/lint.sh",
     "test_cmd": "pytest -x -q",
     "language": "python",
     "framework": "pytest",
@@ -197,14 +200,16 @@ Note: `lint_cmd` does NOT use `cd` (because aider appends files). `test_cmd` CAN
 
 ### If Setup Already Exists
 
-If the project already has working tooling, don't reinstall — verify the commands work from the project root and record them.
+If the project already has working tooling, don't reinstall — verify the commands work from the project root and record them. You still need the lint wrapper for aider compatibility.
 
 ## Common Tooling by Language
 
-| Language | Linter | Test Framework | Notes |
-|----------|--------|---------------|-------|
-| Python | ruff | pytest | Prefer uv for new projects |
-| Kotlin | ktlint (via Gradle plugin) | JUnit (via Gradle) | Managed through build.gradle |
-| TypeScript | ESLint | Jest or Vitest | Managed through package.json |
-| Rust | clippy | cargo test | Built into the toolchain |
-| Go | golangci-lint | go test | Lint needs separate install |
+| Language | Linter | Test Framework | Lint Wrapper Needed? |
+|----------|--------|---------------|-----|
+| Python | ruff | pytest | Yes — use `scripts/lint-ruff-wrapper.sh` |
+| Kotlin | ktlint (via Gradle plugin) | JUnit (via Gradle) | Probably not — Gradle tasks ignore non-source files |
+| TypeScript | ESLint | Jest or Vitest | Maybe — ESLint ignores non-JS files by default, but test if aider passes unexpected files |
+| Rust | clippy | cargo test | No — clippy only processes .rs files |
+| Go | golangci-lint | go test | No — golangci-lint only processes .go files |
+
+For languages not listed, check whether the linter handles non-source files gracefully when passed explicitly. If not, create a language-specific wrapper in `scripts/` following the pattern in `lint-ruff-wrapper.sh`.

@@ -55,9 +55,10 @@ Small models can write code that passes lint and tests, but they can't debug mis
 
 Read `references/tooling.md` for the full discovery and setup process. The key idea: investigate the project's existing conventions first (package manager, virtual environment, monorepo structure), then set up tooling in a way that's consistent with what's already there. If the project uses uv, use uv. If it uses poetry, use poetry. If there's no existing convention, ask the user.
 
-Two things to get right during setup — both are covered in detail in `references/tooling.md`:
-- The lint command must work from the project root without `cd`, because aider appends edited filenames as arguments and the paths would break after a directory change.
-- The linter config must restrict checking to source files only (e.g. `include = ["*.py", "*.pyi"]` for ruff), because aider also passes non-code files like `requirements.txt` to the lint command, which causes unfixable parse errors that trap the small model in a retry loop.
+Three things to get right during setup (all covered in `references/tooling.md`):
+- **Install project dependencies**, not just lint/test tools. Tests will fail with `ModuleNotFoundError` if only ruff and pytest are installed but the project's libraries are missing.
+- **Use the lint wrapper script** (`scripts/lint-ruff-wrapper.sh` for Python/ruff projects). Aider appends every edited filename to the lint command, including non-Python files like `requirements.txt` that ruff can't parse. The wrapper filters to `.py` files only and runs ruff with `--fix` so trivial issues (import sorting, unused imports) are auto-corrected.
+- **Avoid `cd` in the lint command.** Aider appends file paths relative to the project root, which break after a directory change. The wrapper handles this. Test commands can use `cd` since aider runs them as-is.
 
 After setup, verify both commands pass, commit the result, and tell the user what you did.
 
@@ -65,7 +66,7 @@ After setup, verify both commands pass, commit the result, and tell the user wha
 
 Extract a shared context block from the design doc (10-15 lines max). This gets embedded at the top of every task file so the small model understands the project without needing the full design doc.
 
-Include: what the project does (1-2 sentences), tech stack, key directory structure, lint/test commands, naming conventions.
+Include: what the project does (1-2 sentences), tech stack, key directory structure, lint/test commands, naming conventions. Always end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.` — this prevents small models from outputting conversational text that aider's edit format interprets as filenames.
 
 ### 5. Generate Task Documents
 
@@ -169,4 +170,5 @@ Creating 02-task-1.2-create-requirements-file.md... ✓
 | `task-template.md` | When generating task documents (Step 5) — has the complete template with all sections |
 | `references/tooling.md` | When determining lint/test commands (Step 2) and setting up tooling (Step 3) |
 | `references/writing-guide.md` | When writing task doc content — style guidance, splitting rules, complexity ratings |
+| `scripts/lint-ruff-wrapper.sh` | When setting up linting for Python/ruff projects (Step 3) — copy into tasks folder, update `RUFF_BIN`, use as lint_cmd |
 | `scripts/run-tasks-template.sh` | When generating the runner script (Step 7) — copy and adapt for the project |
