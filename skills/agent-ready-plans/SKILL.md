@@ -84,7 +84,9 @@ Key principles for task docs — these matter because small models can't infer w
 - **Code must be lint-clean.** Auto-lint means aider will lint after each edit. Violations in the task doc create unnecessary fix loops.
 - **One commit per task** with a conventional commit message.
 
-Read `references/writing-guide.md` for deeper guidance on writing style, splitting large tasks, and complexity ratings.
+**Deferred tasks:** Some tasks depend on the exact interfaces produced by earlier tasks — integration tests are the most common example. These cannot be accurately written upfront because the small model may produce slightly different signatures, return types, or parameter names than what the plan specifies. Mark these as `"deferred": true` in the manifest and **do not generate their task doc files yet**. Instead, create a placeholder entry in the manifest describing what the deferred task should test/do. See `references/writing-guide.md` for guidance on identifying which tasks should be deferred.
+
+Read `references/writing-guide.md` for deeper guidance on writing style, splitting large tasks, complexity ratings, and deferred task identification.
 
 ### 6. Generate the Manifest
 
@@ -113,12 +115,25 @@ Create `00-manifest.json` with task metadata and a `tooling` section:
       "files_modified": [],
       "test_command": null,
       "estimated_complexity": "simple"
+    },
+    {
+      "file": "25-task-12.1-dag-integration-test.md",
+      "task_id": "12.1",
+      "title": "DAG Integration Tests",
+      "phase": "Integration Testing",
+      "files_created": ["services/airflow-ingestion/tests/test_dag_integration.py"],
+      "files_modified": [],
+      "test_command": null,
+      "estimated_complexity": "complex",
+      "deferred": true,
+      "deferred_reason": "Tests real function signatures produced by tasks 8-24. Must be generated after implementation tasks complete.",
+      "depends_on": ["8.1", "9.1", "10.1"]
     }
   ]
 }
 ```
 
-The runner script reads `lint_cmd` and `test_cmd` from the `tooling` section to configure aider's auto-validation flags.
+The runner script reads `lint_cmd` and `test_cmd` from the `tooling` section to configure aider's auto-validation flags. Tasks with `"deferred": true` are skipped in the first run — the runner stops before them and prompts for deferred task generation.
 
 ### 7. Generate the Runner Script
 
@@ -128,7 +143,10 @@ The runner:
 - Reads lint/test commands from the manifest's `tooling` section
 - Passes `--lint-cmd` + `--auto-lint` and `--test-cmd` + `--auto-test` explicitly to aider (regardless of defaults, for clarity)
 - Uses `--no-check-update` to prevent aider from self-updating mid-run, and `--yes-always` for non-interactive mode
-- Halts on non-zero exit (meaning aider couldn't fix a lint/test failure) and prints how to resume with `--start N`
+- Detects deferred tasks from the manifest and stops before executing them, printing instructions to generate deferred task docs and resume
+- Captures aider output and detects reflection exhaustion ("reflections allowed, stopping") — marks the task as degraded even if aider exits 0, since aider treats exhausted retries as a graceful exit
+- Runs an independent test suite check after each task (not relying solely on aider's exit code) to catch failures aider didn't report
+- Halts on non-zero exit or degraded status and prints how to resume with `--start N`
 - Supports `--dry-run`, `--model`, and CLI overrides for `--lint-cmd`/`--test-cmd`
 
 ### 8. Present Results
@@ -136,7 +154,7 @@ The runner:
 Summarize what was generated:
 
 ```
-Generated 25 task files + manifest + runner in docs/plans/airflow-google-drive-ingestion-tasks/
+Generated 23 task files + 2 deferred + manifest + runner in docs/plans/airflow-google-drive-ingestion-tasks/
 
 Tooling (installed and verified):
   Lint: ruff check . (--auto-lint enabled)
@@ -146,13 +164,18 @@ Phase breakdown:
   Phase 1: Project Scaffolding    — 3 tasks (simple)
   Phase 2: Google Drive Client    — 1 task (moderate)
   ...
+  Phase 6: Integration Testing    — 2 tasks (complex, deferred)
+
+Deferred tasks (generated after implementation tasks complete):
+  25-task-12.1-dag-integration-test.md — needs real function signatures from tasks 8-24
 
 To run:
   cd docs/plans/airflow-google-drive-ingestion-tasks
   chmod +x run-tasks.sh
   ./run-tasks.sh --dry-run
-  ./run-tasks.sh
-  ./run-tasks.sh --start 5    # resume from task 5
+  ./run-tasks.sh                 # runs implementation tasks, stops before deferred
+  # Generate deferred task docs (Claude Code reads actual code and writes test files)
+  ./run-tasks.sh --start 25     # resumes with deferred tasks
 ```
 
 ## Execution Notes
