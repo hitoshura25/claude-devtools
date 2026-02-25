@@ -1,10 +1,10 @@
 ---
-description: Design a feature and produce agent-ready task files for local coding models
+description: Design a feature and produce an implementation plan for agent-ready task decomposition
 ---
 
 # Plan
 
-Design a feature through collaborative brainstorming, then produce an implementation plan broken into individual task files optimized for local coding agents (Aider, Continue, Cline/Roo Code, Goose, etc.).
+Design a feature through collaborative brainstorming, then produce an implementation plan optimized for decomposition into agent-ready task files for local coding agents.
 
 ## Usage
 
@@ -21,48 +21,12 @@ Design a feature through collaborative brainstorming, then produce an implementa
 
 ## Process
 
-### Phase 1: Design (Claude)
+Use skill `devtools:implementation-planning` — it handles the full pipeline:
 
-**If requirements are unclear or no feature description provided:**
-- Use skill `superpowers:brainstorming`
-
-**Create implementation plan:**
-- Use skill `superpowers:writing-plans`
-- Plan saved to `docs/plans/YYYY-MM-DD-feature-name.md`
-
-### Phase 2: Task Decomposition (Claude)
-
-**Break the plan into agent-ready task files:**
-- Use skill `devtools:agent-ready-plans`
-- Creates `docs/plans/YYYY-MM-DD-feature-name/` directory
-- Each task becomes a standalone markdown file
-- Files are numbered and dependency-ordered
-
-### Phase 3: Handoff
-
-**Present the task files and suggest execution:**
-
-> Plan complete. Created N task files in `docs/plans/YYYY-MM-DD-feature-name/`
->
-> **Execute with a local agent:**
-> ```bash
-> # Aider (recommended)
-> aider --read docs/plans/YYYY-MM-DD-feature-name/task-01-name.md
->
-> # Or feed all context
-> aider --read docs/plans/YYYY-MM-DD-feature-name/00-context.md \
->       --read docs/plans/YYYY-MM-DD-feature-name/task-01-name.md
-> ```
->
-> **Or delegate via SERA:**
-> ```
-> /devtools:sera 1
-> ```
->
-> **Or execute with Claude:**
-> ```
-> /devtools:develop
-> ```
+1. **Explore the idea** — uses `superpowers:brainstorming` for collaborative design, stopping after the design doc is committed (does not follow brainstorming's "After the Design" handoff to writing-plans)
+2. **Write the implementation plan** — optimized for clean task decomposition, replacing `superpowers:writing-plans` with a format aware of downstream agent constraints
+3. **Validate wiring completeness** — catch registration gaps before decomposition
+4. **Hand off** — offer to decompose into agent-ready task files via `devtools:agent-ready-plans`, or let the user review the plan first
 
 ## What This Command Does NOT Do
 
@@ -71,12 +35,3 @@ Design a feature through collaborative brainstorming, then produce an implementa
 - Does NOT touch any source files
 
 This command is purely planning and documentation. Implementation is delegated to the agent of your choice.
-
-## Anti-Rationalization
-
-| Excuse | Reality |
-|--------|---------|
-| "I can just start coding from the design doc" | Local models need focused, self-contained context. Task files prevent hallucination. |
-| "One big plan file is fine for Aider" | Smaller context = better output from local models. Always decompose. |
-| "Skip brainstorming, I know what I want" | 5 minutes of design prevents hours of rework. Always brainstorm. |
-| "The design doc is enough" | Design docs explain WHAT. Task files explain HOW with exact paths, code, and tests. |
