@@ -41,6 +41,8 @@ Read `references/plan-format.md` for the complete plan structure, task template,
 
 **TDD ordering.** For each task: write the failing test, then write the implementation that makes it pass. This gives the small model a concrete success signal at each step.
 
+**Test business logic, not library functions.** Tests should verify that your code transforms fixture data correctly — not that Python's datetime or json modules work. When a test hardcodes a manually computed expected value (like an epoch-to-ISO conversion), it's easy to get wrong and impossible for the small model to diagnose. Use fixture data as the source of truth instead. See the "Writing Effective Tests" section in `references/plan-format.md`.
+
 **One component per task.** Each task should create or modify a focused set of files with a single responsibility. If a task touches 5+ unrelated files, it probably needs splitting.
 
 **Cross-phase awareness.** When a later phase adds components that plug into an earlier phase's output (new handlers for a router, new extractors for a pipeline, new commands for a dispatcher), the plan must include the registration step explicitly. This is the most common source of decomposition bugs — see `references/wiring-completeness.md`.

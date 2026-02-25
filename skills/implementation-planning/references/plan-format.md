@@ -135,7 +135,38 @@ The code in the plan ends up verbatim in task docs. Treat it as production code,
 
 - **Test-first always** — the test file appears before the implementation in every task. This is the TDD ordering the task runner expects.
 
-- **Realistic test data** — use concrete values that exercise the actual logic, not `"test"` and `42` everywhere. Mock external dependencies (databases, APIs, message queues) at the boundary — not the internal logic.
+## Writing Effective Tests
+
+Tests in the plan should verify that *your code* transforms input into output correctly — not that standard library functions work. The difference matters because when a test fails, the small model needs to know whether to fix the test or the implementation. Tests that assert business logic against fixture data are unambiguous; tests that re-verify library behavior with manually computed constants are fragile and error-prone.
+
+**Test your code, not the language.** If a function is a thin wrapper around a standard library call (timestamp formatting, JSON serialization, base64 encoding), don't write a test that hardcodes the expected output of that library call. You'll end up doing the computation by hand and getting it wrong. Instead, test the wrapper in context — as part of a larger flow where the input comes from a test fixture and the output is checked structurally.
+
+**Use fixture data as the source of truth.** Build a test fixture (an in-memory SQLite database, a mock API response, a sample message) that represents real-world input. Run your code against it. Assert properties of the output that reflect your business logic: the right number of records, the right fields present, values matching what you put into the fixture. The fixture is data you control, so the expected values are known by construction — not computed by hand.
+
+**Example — testing an extractor:**
+```python
+@pytest.fixture
+def sample_db():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE steps_table (start_time INTEGER, end_time INTEGER, count INTEGER)")
+    conn.execute("INSERT INTO steps_table VALUES (1000, 2000, 150)")
+    conn.execute("INSERT INTO steps_table VALUES (3000, 4000, 200)")
+    yield conn
+    conn.close()
+
+def test_extract_returns_records_above_watermark(sample_db):
+    extractor = StepsExtractor()
+    results = extractor.extract(sample_db, watermark_ms=1500)
+    # Verifies business logic: only records with start_time > watermark
+    assert len(results) == 1
+    assert results[0]["count"] == 200
+```
+
+Notice what this test does *not* do: it doesn't hardcode a formatted timestamp string that someone computed by hand. The expected value (`200`) comes directly from the fixture data (`INSERT INTO ... 200`). The assertion verifies that the watermark filter works — which is the actual business logic.
+
+**When hardcoded expected values are unavoidable,** keep them trivially verifiable. Use epoch `0` (which is `1970-01-01T00:00:00+00:00` — everyone knows this), or small round numbers, or values copied directly from real data sources. Avoid hand-computing conversions for large epoch timestamps, hex encodings, or hash digests — these are exactly the values that are easy to get wrong during planning.
+
+**Mock at the boundary, not the internals.** Mock external services (Google Drive API, MinIO, RabbitMQ) but let internal logic run for real. This tests your actual code paths rather than testing that mocks return what you told them to return.
 
 ## Phasing Guidelines
 
