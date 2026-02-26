@@ -6,9 +6,10 @@ The implementation plan is a single markdown file that fully describes how to bu
 
 Plans with complete code are large — a 20-task plan can easily be 3000+ lines. Do not attempt to write the entire plan in one tool call; this will hit output token limits. Instead:
 
-1. Write the header + first 2-3 phases in the initial file creation
+1. Write the header + first phase only in the initial file creation
 2. Append remaining phases one at a time using file edit/append operations
 3. Keep each chunk aligned to phase boundaries — never split a task across chunks
+4. If a single phase exceeds the output limit, write one task at a time within that phase
 
 ## Document Structure
 
@@ -65,6 +66,8 @@ on real function signatures and import paths from earlier tasks.
 ## Task Template
 
 Each task follows this structure. The precision here directly determines whether the small model succeeds or fails — every field matters.
+
+**The TDD cycle is atomic.** A task's test file and its implementation must always live in the same task. Never split "write the test" and "write the implementation" across separate tasks — the runner verifies that tests pass at the end of each task, so a test-only task will always fail (the module it imports doesn't exist yet). The sequence write test → run fail → implement → run pass is one unit of work.
 
 ```markdown
 ### Task X.Y: [Component Name]
@@ -166,6 +169,8 @@ Notice what this test does *not* do: it doesn't hardcode a formatted timestamp s
 
 **When hardcoded expected values are unavoidable,** keep them trivially verifiable. Use epoch `0` (which is `1970-01-01T00:00:00+00:00` — everyone knows this), or small round numbers, or values copied directly from real data sources. Avoid hand-computing conversions for large epoch timestamps, hex encodings, or hash digests — these are exactly the values that are easy to get wrong during planning.
 
+**Keep test code straightforward.** Task docs are executed by small models that follow patterns literally. Test code should use only plain, readable constructs — direct instantiation, simple fixtures, standard assertions. Avoid metaprogramming (`__bases__` reassignment, `type()` class creation), dynamic class manipulation, or clever patterns that require deep Python knowledge to understand. If a concrete test subclass is needed, define it at the top of the test file as a normal class — don't construct or modify it at runtime.
+
 **Mock at the boundary, not the internals.** Mock external services (Google Drive API, MinIO, RabbitMQ) but let internal logic run for real. This tests your actual code paths rather than testing that mocks return what you told them to return.
 
 ## Phasing Guidelines
@@ -216,6 +221,6 @@ Aim for tasks that produce task docs under ~2000 tokens when decomposed. A good 
 
 - **Simple tasks** (scaffolding, config, requirements): 1 task per file group
 - **Moderate tasks** (one class + its tests): 1 task per component
-- **Complex tasks** (multiple interacting files): split into sub-tasks (e.g., 5.3a for tests, 5.3b for implementation)
+- **Complex tasks** (multiple interacting files): split by responsibility, not by test/implementation. For example, if a DAG task has both the DAG module and a config update, split into "config update" and "DAG module + its test" — never into "test file" and "implementation file"
 
-If a task has more than 3 files in its "Create" list, consider splitting it.
+If a task has more than 3 files in its "Create" list, consider splitting it. But always keep a test file together with the implementation it tests.

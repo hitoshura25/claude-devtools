@@ -51,7 +51,7 @@ Read `references/plan-format.md` for the complete plan structure, task template,
 
 Save to `docs/plans/YYYY-MM-DD-<feature-name>-implementation.md`.
 
-**Writing strategy for large plans:** Plans with complete code for 15+ tasks will exceed tool output token limits if written in a single call. Write the plan incrementally — start with the header and first 2-3 phases, then append remaining phases using edit/append operations. Each chunk should cover a complete phase (don't split a task across chunks). Do not attempt to write the entire plan in one tool call.
+**Writing strategy for large plans:** Plans with complete code for 15+ tasks will exceed tool output token limits if written in a single call. Write the plan incrementally — start with the header and first phase only, then append remaining phases one at a time using edit/append operations. Each chunk should cover a complete phase (don't split a task across chunks). If even a single phase is too large, write one task at a time within it.
 
 **No automatic git operations.** Do not commit, stage, or add files to git unless the user explicitly asks. Planning artifacts are the user's to manage.
 
