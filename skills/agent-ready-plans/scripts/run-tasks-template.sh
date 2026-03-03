@@ -116,6 +116,32 @@ for TASK_FILE in "${TASK_FILES[@]}"; do
     continue
   fi
 
+  # ── Check pre_validated flag ───────────────────────────────
+  PRE_VALIDATED=$(python3 -c "
+import json, sys
+m = json.load(open('$MANIFEST'))
+task = next((t for t in m.get('tasks', []) if t.get('file') == '$BASENAME'), None)
+if task is None:
+    sys.exit(0)
+print('true' if task.get('pre_validated', False) else 'false')
+" 2>/dev/null || echo "unknown")
+
+  if [[ "$PRE_VALIDATED" == "false" ]]; then
+    echo ""
+    echo "⚠️  WARNING: $BASENAME is not pre_validated in the manifest."
+    echo "   Tests were not verified by Claude Code before handoff."
+    echo "   The small model may be working with weak or broken tests."
+    echo ""
+    echo "   To fix: re-run Step 3b (write and validate tests) for this task,"
+    echo "   update the manifest with pre_validated=true, and re-run."
+    echo ""
+    read -r -p "   Continue anyway? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      echo "   Aborted. Fix the task first."
+      exit 1
+    fi
+  fi
+
   # ── Check if this is a deferred task ───────────────────────
   if is_deferred "$BASENAME"; then
     DEFERRED_HIT=true

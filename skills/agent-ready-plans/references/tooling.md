@@ -202,14 +202,300 @@ The lint command points to the wrapper script. The test command runs directly (s
 
 If the project already has working tooling, don't reinstall — verify the commands work from the project root and record them. You still need the lint wrapper for aider compatibility.
 
+## Creating External Dependency Mock Fixtures
+
+Small models consistently fail at mocking external service clients. The pattern is always the same: the model writes a test that mocks a library like `google-api-python-client` or `boto3`, gets the mock wiring subtly wrong (fluent chain doesn't return the right mock, buffer write never happens, connection lifecycle doesn't match), then exhausts all its reflections trying to debug mock plumbing instead of writing business logic.
+
+The fix: Claude Code creates reusable pytest fixtures in `conftest.py` during scaffold setup. These fixtures handle the tricky mock internals once, correctly. The small model's tests use them by name and only configure return values.
+
+### When to Create a Fixture
+
+Create a conftest fixture for any external dependency that meets these criteria:
+- Has a fluent or chained API (e.g., `service.files().list().execute()`)
+- Requires simulating I/O (downloads writing to buffers, uploads capturing bytes)
+- Has a connect/use/close lifecycle (database connections, message brokers)
+- Is used by multiple tasks in the plan
+
+Common candidates: Google API clients, boto3/S3, pika/RabbitMQ, database drivers, HTTP clients with session management.
+
+### How to Create Them
+
+Each fixture should:
+1. Patch at the correct import boundary (where the implementation imports from)
+2. Wire the full mock chain so the model doesn't need to understand library internals
+3. Expose simple attributes for test customization (set return values, check call args)
+4. Handle I/O simulation correctly (e.g., writing to BytesIO buffers during download mocks)
+5. Clean up patches after the test
+
+Use `@pytest.fixture` (not autouse — the model opts in by adding the fixture name to its test function signature). Return the mock object so tests can configure it.
+
+### Example: Google Drive API v3
+
+This is a representative example of the kind of fixture Claude Code should create. The Google Drive client has a fluent API chain and a buffer-based download loop — two things small models get wrong every time.
+
+```python
+@pytest.fixture
+def mock_drive_service():
+    """Pre-wired Google Drive API v3 mock.
+    
+    Usage in tests:
+        def test_download(mock_drive_service):
+            mock_drive_service["file_bytes"] = b"my content"
+            # ... call your client, assert results
+    
+    Provides:
+        mock_drive_service["service"]  - the mocked Drive service object
+        mock_drive_service["file_bytes"] - set this to control download content (default: b"test data")
+        mock_drive_service["file_list"] - set this to control files().list() results
+    """
+    with patch("plugins.writers.google_drive_client.build") as mock_build, \
+         patch("plugins.writers.google_drive_client.Credentials") as mock_creds, \
+         patch("plugins.writers.google_drive_client.MediaIoBaseDownload") as mock_download_cls:
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        # State dict the test can customize
+        state = {
+            "service": mock_service,
+            "file_bytes": b"test data",
+            "file_list": [{"id": "file-123", "name": "test.zip"}],
+        }
+        
+        # Wire files().list().execute() chain
+        mock_service.files.return_value.list.return_value.execute.return_value = {
+            "files": state["file_list"]
+        }
+        
+        # Wire download to actually write bytes into the buffer
+        def download_side_effect(fh, request):
+            downloader = MagicMock()
+            def next_chunk():
+                fh.write(state["file_bytes"])
+                return (MagicMock(progress=lambda: 1.0), True)
+            downloader.next_chunk = next_chunk
+            return downloader
+        
+        mock_download_cls.side_effect = download_side_effect
+        
+        yield state
+```
+
+### Example: boto3 S3 Client
+
+```python
+@pytest.fixture
+def mock_s3_client():
+    """Pre-wired boto3 S3 client mock with put_object capture.
+    
+    Usage in tests:
+        def test_upload(mock_s3_client):
+            # ... call your writer
+            body = mock_s3_client["captured_body"]()  # get the uploaded bytes
+    """
+    with patch("plugins.writers.minio_writer.boto3.client") as mock_client_cls:
+        mock_s3 = MagicMock()
+        mock_client_cls.return_value = mock_s3
+        
+        state = {"client": mock_s3}
+        
+        # Capture put_object Body arg for assertions
+        state["captured_body"] = lambda: mock_s3.put_object.call_args[1]["Body"]
+        state["captured_key"] = lambda: mock_s3.put_object.call_args[1]["Key"]
+        state["captured_bucket"] = lambda: mock_s3.put_object.call_args[1]["Bucket"]
+        
+        yield state
+```
+
+### Example: pika/RabbitMQ
+
+```python
+@pytest.fixture
+def mock_pika_connection():
+    """Pre-wired pika.BlockingConnection mock with channel and publish.
+    
+    Usage in tests:
+        def test_publish(mock_pika_connection):
+            # ... call your publisher
+            call_args = mock_pika_connection["channel"].basic_publish.call_args
+    """
+    with patch("plugins.writers.rabbitmq_publisher.pika.BlockingConnection") as mock_conn_cls:
+        mock_conn = MagicMock()
+        mock_channel = MagicMock()
+        mock_conn_cls.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+        
+        state = {
+            "connection_cls": mock_conn_cls,
+            "connection": mock_conn,
+            "channel": mock_channel,
+        }
+        
+        yield state
+```
+
+### Listing Fixtures in the Project Context
+
+After creating fixtures, list them in the project context block that gets embedded in every task doc. This is how the small model knows they exist. Format:
+
+```
+Available conftest fixtures (use these instead of writing your own mocks):
+- `mock_drive_service` — pre-wired Google Drive API v3 mock with download support
+- `mock_s3_client` — pre-wired boto3 S3 client mock with put_object capture
+- `mock_pika_connection` — pre-wired pika.BlockingConnection mock with channel/publish
+```
+
+The names and one-line descriptions are enough — the model adds the fixture name to its test function parameters, pytest injects it, and the test can configure return values without touching mock internals.
+
+### Verifying Fixtures
+
+After creating conftest fixtures, write a minimal smoke test that imports and uses each one. This catches patch target path errors before the small model encounters them. A simple test per fixture:
+
+```python
+def test_mock_drive_service_fixture(mock_drive_service):
+    assert mock_drive_service["file_bytes"] == b"test data"
+
+def test_mock_s3_client_fixture(mock_s3_client):
+    assert mock_s3_client["client"] is not None
+
+def test_mock_pika_connection_fixture(mock_pika_connection):
+    assert mock_pika_connection["channel"] is not None
+```
+
+Run `pytest` and verify these pass before generating task docs. If a patch target is wrong (e.g., the implementation file doesn't exist yet), adjust the patch path to match where the implementation will import from — the plan's "Files to Create" section tells you the exact module paths.
+
+## Mutation Testing
+
+Mutation testing verifies that tests actually catch bugs. A mutation tool makes small, deliberate code changes ("mutants") to a stub implementation and re-runs the tests. If a test passes with a mutated stub, it means the test wouldn't catch that class of bug in the real implementation — a weak assertion.
+
+Run this during Step 3b before embedding tests in task docs. Target: ≥80% mutation score. Surviving mutants above that threshold require strengthening the corresponding tests.
+
+**This step uses a stub implementation — not the final code.** The stub must be importable with correct signatures but no real logic. This is intentional: mutations are applied to the stub so you can detect whether tests are sensitive to logic changes.
+
+### Python: mutmut
+
+`mutmut` is the recommended Python mutation testing tool (v3.5.0, PyPI: `mutmut`, requires Python ≥3.10).
+
+**Install:**
+```bash
+pip install mutmut
+# or with uv:
+uv add --dev mutmut
+```
+
+**Run against a specific module + test file:**
+```bash
+# From project/service root
+mutmut run --paths-to-mutate src/mymodule/filter.py
+# View surviving mutants
+mutmut results
+# Inspect a specific survivor
+mutmut show <id>
+```
+
+**Configure in `pyproject.toml` or `setup.cfg`** (recommended for service directories):
+```toml
+[tool.mutmut]
+paths_to_mutate = "src/mymodule/"
+tests_dir = "tests/"
+```
+
+**Interpreting results:**
+- `killed` — test caught the mutation. Good.
+- `survived` — test passed despite the mutation. Weak assertion — strengthen the test.
+- `suspicious` — test timed out or behaved unexpectedly. Investigate.
+- `skipped` — mutmut couldn't apply the mutation (usually type annotation conflicts). Usually ignorable.
+
+**Minimum threshold:** 80% killed. If score is below this, check `mutmut results` for survivors and add assertions that would catch them.
+
+**Note on performance:** mutmut runs the full test suite once per mutant. For large test suites, scope it to just the test file for the task under review using `pytest_add_cli_args_test_selection` in config:
+```toml
+[tool.mutmut]
+paths_to_mutate = "src/mymodule/filter.py"
+pytest_add_cli_args_test_selection = "tests/test_filter.py"
+```
+
+### TypeScript/JavaScript: Stryker
+
+For TypeScript and JavaScript projects, [Stryker Mutator](https://stryker-mutator.io/) is the equivalent tool.
+
+**Install:**
+```bash
+npm install --save-dev @stryker-mutator/core @stryker-mutator/jest-runner
+# or for Vitest:
+npm install --save-dev @stryker-mutator/core @stryker-mutator/vitest-runner
+```
+
+**Run:**
+```bash
+npx stryker run
+```
+
+**Minimal config (`stryker.config.mjs`):**
+```js
+export default {
+  testRunner: 'jest',  // or 'vitest'
+  coverageAnalysis: 'perTest',
+  mutate: ['src/mymodule/filter.ts'],
+};
+```
+
+### Kotlin/Java: PIT (Pitest)
+
+For JVM projects using Gradle, [Pitest](https://pitest.org/) is the standard mutation testing tool.
+
+**Add to `build.gradle.kts`:**
+```kotlin
+plugins {
+    id("info.solidsoft.pitest") version "1.15.0"
+}
+pitest {
+    targetClasses.set(listOf("com.example.mymodule.*"))
+    targetTests.set(listOf("com.example.mymodule.*Test"))
+    mutationThreshold.set(80)
+}
+```
+
+**Run:**
+```bash
+./gradlew pitest
+```
+
+### Rust: cargo-mutants
+
+For Rust projects, [cargo-mutants](https://mutants.rs/) is the recommended tool.
+
+**Install:**
+```bash
+cargo install cargo-mutants
+```
+
+**Run against a specific module:**
+```bash
+cargo mutants --file src/filter.rs
+```
+
+### Go: go-mutesting
+
+For Go projects, [go-mutesting](https://github.com/zimmski/go-mutesting) is the most established option, though the ecosystem is less mature than Python/JS.
+
+```bash
+go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest
+go-mutesting ./mypackage/...
+```
+
+### When Mutation Testing Isn't Available
+
+If no mutation testing tool is available or practical for the language (e.g., shell scripts, SQL, config-heavy projects), apply the anti-patterns checklist from `writing-guide.md` § "Anti-Patterns to Avoid" manually as a code review step before embedding tests in task docs. Document that mutation testing was skipped and why in the manifest (`"mutation_gate": "skipped", "mutation_gate_reason": "..."`). This is an acceptable fallback — the anti-pattern review catches the most common failure modes even without automated tooling.
+
 ## Common Tooling by Language
 
-| Language | Linter | Test Framework | Lint Wrapper Needed? |
-|----------|--------|---------------|-----|
-| Python | ruff | pytest | Yes — use `scripts/lint-ruff-wrapper.sh` |
-| Kotlin | ktlint (via Gradle plugin) | JUnit (via Gradle) | Probably not — Gradle tasks ignore non-source files |
-| TypeScript | ESLint | Jest or Vitest | Maybe — ESLint ignores non-JS files by default, but test if aider passes unexpected files |
-| Rust | clippy | cargo test | No — clippy only processes .rs files |
-| Go | golangci-lint | go test | No — golangci-lint only processes .go files |
+| Language | Linter | Test Framework | Mutation Tool | Lint Wrapper Needed? |
+|----------|--------|---------------|---------------|-----|
+| Python | ruff | pytest | mutmut | Yes — use `scripts/lint-ruff-wrapper.sh` |
+| Kotlin/Java | ktlint / Gradle | JUnit (via Gradle) | Pitest (Gradle plugin) | Probably not — Gradle tasks ignore non-source files |
+| TypeScript | ESLint | Jest or Vitest | Stryker | Maybe — ESLint ignores non-JS files by default, but test if aider passes unexpected files |
+| Rust | clippy | cargo test | cargo-mutants | No — clippy only processes .rs files |
+| Go | golangci-lint | go test | go-mutesting | No — golangci-lint only processes .go files |
 
 For languages not listed, check whether the linter handles non-source files gracefully when passed explicitly. If not, create a language-specific wrapper in `scripts/` following the pattern in `lint-ruff-wrapper.sh`.

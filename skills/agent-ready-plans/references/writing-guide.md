@@ -4,23 +4,125 @@ Small models (7B-32B parameters) need a very different instruction style than Cl
 
 ## Core Principles
 
-**Be explicit, not clever.** Spell out every step. Instead of "follow the same pattern as the steps extractor", copy the pattern inline. The model shouldn't need to figure out what you mean.
+**Be explicit, not clever.** Spell out every interface contract precisely. Instead of "follow the same pattern as the steps extractor", specify the exact class name, method signatures, and behavioral requirements.
 
-**One thing at a time.** Each instruction should do exactly one thing. "Create file X with this content" — not "Create the test file, run it, then create the implementation."
+**Interface contracts, not implementation code.** Define class names, method signatures with type hints, and behavioral specs. Do not include method bodies — the small model writes the implementation to pass the pre-written tests.
 
-**Full code always.** Provide the complete implementation, not placeholders. "Implement the transform method" will confuse a small model. Give it the actual method body.
+**Tests are Claude Code's responsibility.** Claude Code writes complete, verified test code during scaffold (Step 3b). Task docs embed the test file verbatim in the `## Tests` section. The small model's job is to implement the code to pass them — not to write tests.
 
-**Minimize context requirements.** The model shouldn't need to read other files to understand what to do. If it needs an interface, include the interface definition in the task doc.
+**Environment constraints over mock instructions.** State what's mocked and what can't make real connections. Tests already handle the mock wiring — don't describe mock patterns in the task doc.
 
-**Concrete over abstract.** `Create a class StepsExtractor that inherits from BaseRecordExtractor` with the full class body is better than "Create an extractor following the base class pattern."
+**Minimize context requirements.** The model shouldn't need to read other files to understand what to do. Include the interface of dependencies in the task doc (class name, key method signatures) along with the import path.
 
-**Keep task docs under 2000 tokens.** Small model context windows are limited. If a task would exceed this, split it into sub-tasks (see Splitting Guidelines below).
-
-**Write lint-clean code.** Since the runner enables `--auto-lint`, any lint violations in task docs cause aider to enter a fix loop. Write clean code so aider focuses on creating files, not fixing style.
-
-**Include tests for every task.** Since the runner enables `--auto-test`, every task needs tests that pass after the code is created. If the original plan doesn't specify tests, write them.
+**Keep task docs under 2000 tokens.** Small model context windows are limited. Spec-based tasks are naturally shorter than code-based tasks, so this limit is easier to hit.
 
 **Always include the output constraint.** Small models often append conversational text like "To test this, run..." or "If you want to run the tests...". Aider's `whole` edit format interprets these as filenames and creates junk files at the project root. Every task's Project Context section must end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.`
+
+## Writing Correct Tests
+
+Claude Code authors tests during Step 3b. The tests must be correct — both logically sound and mechanically robust. Incorrect tests are worse than no tests: the small model passes them trivially while the real behavior goes unvalidated, or gets stuck in a failing loop it can't escape.
+
+### Two-Layer Validation Gate
+
+Every test file must pass both layers before being embedded in a task doc:
+
+**Layer 1: Mutation gate.** Run a mutation testing tool against the stub implementation + tests. A surviving mutant means a test that would pass even if that logic were changed — a weak assertion. Strengthen tests until mutation score ≥ 80%. See `tooling.md` § "Mutation Testing" for tool selection by language.
+
+**Layer 2: Correct failure mode.** Run the test suite against the stub. Every test must fail, and must fail for the right reason:
+- ✅ `NotImplementedError` — stub body raises it correctly
+- ✅ Assertion failure on a wrong return value — stub returns `None` where a real value is expected
+- ❌ `ImportError` or `ModuleNotFoundError` — test infrastructure is broken, fix it
+- ❌ `TypeError` in test setup code — the test itself has a bug, fix it
+- ❌ `AttributeError` on a fixture — conftest fixture is mis-wired, fix it
+- ❌ Any test passes against the stub — the test is vacuous, strengthen it
+
+### Anti-Patterns to Avoid
+
+These produce tests that pass trivially or test the wrong thing:
+
+**Mocking the code under test.** Never patch the class or function being tested. Only patch its external dependencies.
+```python
+# WRONG — patches the code under test, test always passes
+with patch("mymodule.MyClass.filter") as mock:
+    mock.return_value = expected
+    result = MyClass().filter(input)  # calls mock, not implementation
+    assert result == expected  # trivially true
+
+# CORRECT — only patches the external DB dependency
+with patch("mymodule.db_client") as mock_db:
+    mock_db.query.return_value = raw_rows
+    result = MyClass().filter(input)  # calls real implementation
+    assert result == filtered_rows  # tests actual logic
+```
+
+**Asserting call counts instead of outputs.** Verify what the function returns or what state it produces, not how many times it called a mock.
+```python
+# WEAK — passes even if the function returns garbage
+assert mock_db.query.call_count == 1
+
+# STRONG — verifies the actual output value
+assert result == [row for row in rows if row.ts > watermark]
+```
+
+**Skipping boundary conditions.** For any filtering, sorting, or conditional logic, always test the boundary explicitly.
+```python
+# INSUFFICIENT — only tests values clearly on one side
+def test_filter():
+    rows = [Row(ts=500), Row(ts=2000)]
+    assert filter(rows, watermark=1000) == [Row(ts=2000)]
+
+# COMPLETE — tests the boundary value itself
+def test_filter_boundary():
+    rows = [Row(ts=999), Row(ts=1000), Row(ts=1001)]
+    result = filter(rows, watermark=1000)
+    assert result == [Row(ts=1001)]  # 1000 is excluded, 1001 is included
+```
+
+**Happy-path-only tests.** Every behavior bullet in the task doc must have a corresponding test, including error cases and empty inputs.
+
+**Vacuous tests after fixing import errors.** If a test passes against the stub after you fix an import error, the test is testing nothing — it will also pass against a broken implementation. Make it assert something real.
+
+### Writing Tests That Exercise Contracts
+
+- Write one test per behavioral requirement from the `## Behavior` section
+- Use the conftest fixtures from the scaffold — don't re-mock what's already wired
+- For data transformation: assert on the exact output structure, not just its type
+- For exclusion logic: test both sides (excluded item absent, non-excluded item present)
+- For error handling: assert the specific exception type and message where specified
+- For stateful operations: assert the state change, not just the absence of errors
+
+### Stub Design
+
+Stubs must be designed so mutation testing is meaningful:
+- Methods return `None` or raise `NotImplementedError` — not real values
+- Class structure matches the interface contract exactly (correct names, signatures, type hints)
+- All imports resolve correctly (no import errors at collection time)
+- Do not include any real logic — if a stub accidentally implements part of the logic, mutants in that path may be killed by the stub itself, not by the tests
+
+**Module-level singletons must not be instantiated in stubs.** If a module defines a singleton (e.g., `settings = Settings()`), and other stubs import that module at the top level, the singleton constructor runs at collection time. If the constructor requires runtime environment (env vars, files, network), pytest collection fails with an error — not a test failure — and the Layer 2 check cannot be completed for any test file that transitively imports it.
+
+Stub rule: replace any module-level singleton instantiation with `None`:
+```python
+# WRONG — Settings() requires env vars; fails at collection if env vars absent
+settings = Settings()
+
+# CORRECT stub — importable without env vars; implementation task sets the real value
+settings = None
+```
+
+The real `settings = Settings()` belongs only in the final implementation (Task 2.1 in this case), not in the stub. Once Task 2.1 is implemented, the DAG and other modules that import `settings` will get the real value — which is correct, because by that point the implementation tasks have run in order.
+
+Example Python stub:
+```python
+class RecordFilter:
+    def filter(self, rows: list[Row], watermark: int) -> list[Row]:
+        raise NotImplementedError
+
+    def count(self, rows: list[Row]) -> int:
+        raise NotImplementedError
+```
+
+After mutation gate and failure mode validation pass, remove the method bodies (leave `raise NotImplementedError`) and embed the test file in the task doc.
 
 ## Deferred Tasks
 
@@ -62,18 +164,18 @@ When generating a deferred task doc after implementation, follow the same task-t
 
 ## Task Splitting Guidelines
 
-If a single task from the implementation plan would produce a task doc exceeding ~2000 tokens:
+Spec-based task docs are naturally shorter than code-based ones, so splitting is less common. If a task doc still exceeds ~2000 tokens (usually because the interface has many methods or the test scenarios are extensive):
 
-1. Split the test and implementation into separate task docs
+1. Split by responsibility — e.g., "create config" and "create the component + tests" as separate tasks
 2. Keep "create file" and "modify file" as separate tasks
-3. For tasks with 3+ files, consider one task per file
+3. **Never split the implementation from its pre-written tests.** The task doc embeds the test file Claude Code authored — the implementation task must include those tests so the small model has a concrete pass/fail criterion.
 
 **Example split:**
 ```
-Original: Task 5.3 — Heart Rate Extractor (with Series Join)
+Original: Task 5.1 — Airflow DAG (complex, many extractors to register)
 Split into:
-  - 08-task-5.3a-heart-rate-extractor-tests.md
-  - 09-task-5.3b-heart-rate-extractor-implementation.md
+  - 14-task-5.1a-dag-config-and-test-infra.md  (conftest updates, test utilities)
+  - 15-task-5.1b-dag-implementation.md          (DAG code + DAG import tests)
 ```
 
 Update the manifest to reflect the split and keep sequential numbering intact.

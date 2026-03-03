@@ -5,11 +5,11 @@ description: Design features and produce implementation plans optimized for agen
 
 # Implementation Planning
 
-Turn a feature idea into a design document and implementation plan that decomposes cleanly into agent-ready task files. The plan is the bridge between "what we want to build" and "what a small model can execute" — it needs to be precise enough that every task becomes self-contained, with no implicit wiring or registration steps left to chance.
+Turn a feature idea into a design document and implementation plan that decomposes cleanly into agent-ready task files. The plan defines interface contracts and behavioral specs for each component — precise enough for Claude Code to write verified tests, and for a small model to implement the code that passes them.
 
 This skill produces two artifacts:
 1. **Design document** — the what and why (architecture, data model, decisions)
-2. **Implementation plan** — the how (phased tasks with TDD steps, file paths, complete code)
+2. **Implementation plan** — the how (phased tasks with interface contracts, behavior specs, test scenarios, and wiring steps)
 
 These feed directly into `devtools:agent-ready-plans` for task decomposition.
 
@@ -27,31 +27,31 @@ If the user already has a design document (or provides enough context to skip br
 
 ### 2. Write the Implementation Plan
 
-This is where precision matters most. The plan is the source of truth that the agent-ready-plans skill will decompose into individual task files for small models. Every gap or ambiguity in the plan becomes a bug in the task docs — small models follow instructions literally and can't fill in what's missing.
+This is where precision matters most. The plan is the source of truth that the agent-ready-plans skill decomposes into individual task files for small models.
+
+**The plan defines interfaces, not implementations.** Each task specifies: what class/function to create, its public method signatures with type hints, behavioral requirements, test scenarios, and how it wires into the rest of the system. Claude Code uses these specs to write and validate the tests; the small model writes the implementation to make them pass.
 
 Read `references/plan-format.md` for the complete plan structure, task template, and formatting.
 
 **Key principles for plans that decompose well:**
 
-**Complete wiring.** Every component that gets created must also be wired into whatever consumes it — in the same task or an explicit later task. If task 8 creates a new extractor class and the DAG in task 5 has a registry of extractors, the plan must include a step to add the new extractor to that registry. Don't assume a small model will infer this. Read `references/wiring-completeness.md` for the detailed checklist and common patterns where registration gaps occur.
+**Precise interface contracts.** Every task must define the class name, method signatures, parameter types, and return types that downstream tasks depend on. The model can structure its internals however it wants, but the public interface must match the spec so cross-task imports work.
+
+**Concrete behavioral specs.** Don't say "handles edge cases" — say "returns empty list when no records are newer than the watermark." Each behavior becomes a test scenario the model implements. The more specific the scenario, the more meaningful the tests.
+
+**Test scenarios for Claude Code, not test code.** Describe what to set up and what to assert: "In-memory SQLite with 3 rows at times 1000/2000/3000, extract with watermark=1500 → returns only rows at 2000 and 3000." Claude Code uses these scenarios to write and validate the actual test code during the agent-ready-plans scaffold phase. See "Writing Test Scenarios" in `references/plan-format.md`.
+
+**Environment constraints, not mock instructions.** When a project has unusual testing requirements (Airflow not installed, RabbitMQ not running), state these as constraints: "Mock pika.BlockingConnection — no real connections in tests." Don't prescribe the exact mock pattern — the model picks one that works with its implementation.
+
+**Complete wiring.** Every component that gets created must also be wired into whatever consumes it — in the same task or an explicit later task. Read `references/wiring-completeness.md` for the detailed checklist.
 
 **Exact file paths.** Always specify the full path from project root. Never "create a config file" — always "create `services/airflow-ingestion/config/settings.py`".
 
-**Complete code.** Provide the actual implementation, not "add validation logic here." The plan's code ends up verbatim in task docs that small models execute. Placeholders become bugs.
+**Scaffold as a separate concern.** Phase 1 (project scaffold) is not a task for the small model. List what the scaffold contains in the plan — the agent-ready-plans skill creates these files directly via Claude Code before delegating tasks to the small model.
 
-**TDD ordering.** For each task: write the failing test, then write the implementation that makes it pass. This gives the small model a concrete success signal at each step.
-
-**Test business logic, not library functions.** Tests should verify that your code transforms fixture data correctly — not that Python's datetime or json modules work. When a test hardcodes a manually computed expected value (like an epoch-to-ISO conversion), it's easy to get wrong and impossible for the small model to diagnose. Use fixture data as the source of truth instead. See the "Writing Effective Tests" section in `references/plan-format.md`.
-
-**One component per task.** Each task should create or modify a focused set of files with a single responsibility. If a task touches 5+ unrelated files, it probably needs splitting.
-
-**Cross-phase awareness.** When a later phase adds components that plug into an earlier phase's output (new handlers for a router, new extractors for a pipeline, new commands for a dispatcher), the plan must include the registration step explicitly. This is the most common source of decomposition bugs — see `references/wiring-completeness.md`.
-
-**Flag deferred tasks.** Integration tests and end-to-end tests that depend on the exact interfaces produced by multiple earlier tasks should be marked as deferred in the plan. Their precise signatures, mocks, and assertions can only be written accurately after the implementation tasks have run and the real code exists. Note these in the plan as "deferred — generate after implementation tasks complete."
+**Flag deferred tasks.** Integration tests that depend on exact interfaces from multiple tasks should be marked as deferred. Their precise signatures can only be known after the implementation tasks have run.
 
 Save to `docs/plans/YYYY-MM-DD-<feature-name>-implementation.md`.
-
-**Writing strategy for large plans:** Plans with complete code for 15+ tasks will exceed tool output token limits if written in a single call. Write the plan incrementally — start with the header and first phase only, then append remaining phases one at a time using edit/append operations. Each chunk should cover a complete phase (don't split a task across chunks). If even a single phase is too large, write one task at a time within it.
 
 **No automatic git operations.** Do not commit, stage, or add files to git unless the user explicitly asks. Planning artifacts are the user's to manage.
 
@@ -63,8 +63,10 @@ Before handing off, walk through the wiring completeness checklist in `reference
 - Every registry, factory, router, or dispatcher gets updated when new entries are added in later phases
 - Cross-phase dependencies are explicit (not implied by task ordering)
 - Integration tests are flagged as deferred
+- Every task's interface contract includes type hints on all public methods
+- Every task's test scenarios are specific enough to verify the behavioral specs
 
-If gaps are found, update the plan. This check is worth the 5 minutes — a single missing registration step causes cascading test failures across 25 automated tasks.
+If gaps are found, update the plan. This check is worth the 5 minutes — a single missing registration step causes cascading test failures across 20 automated tasks.
 
 ### 4. Hand Off
 
@@ -75,8 +77,8 @@ Design: docs/plans/YYYY-MM-DD-feature-name-design.md
 Plan:   docs/plans/YYYY-MM-DD-feature-name-implementation.md
 
 Phase breakdown:
-  Phase 1: Project Scaffolding    — 3 tasks
-  Phase 2: Core Components        — 4 tasks
+  Phase 1: Project Scaffolding    — Claude Code creates directly
+  Phase 2: Core Components        — 4 tasks (spec-based)
   ...
   Phase N: Integration Tests      — 2 tasks (deferred)
 
@@ -88,10 +90,11 @@ If the user wants to proceed immediately, use `devtools:agent-ready-plans` with 
 
 ## What This Skill Does NOT Do
 
-- Does not implement any code
+- Does not implement any code (except scaffold files via agent-ready-plans)
 - Does not create task files (that's agent-ready-plans)
 - Does not run tests or modify source files
 - Does not touch anything outside of `docs/plans/`
+- Does not commit, stage, or add files to git
 
 ## Bundled Resources
 
