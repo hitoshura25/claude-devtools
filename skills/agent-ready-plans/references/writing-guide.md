@@ -6,6 +6,15 @@ Small models (7B-32B parameters) need a very different instruction style than Cl
 
 **Be explicit, not clever.** Spell out every interface contract precisely. Instead of "follow the same pattern as the steps extractor", specify the exact class name, method signatures, and behavioral requirements.
 
+**Show the base class call site for abstract methods.** When a task implements methods from an inherited ABC, the model only sees the abstract signature — not how the base class actually calls it. Without the call site, the model guesses the argument type and cardinality, and guesses wrong. For every abstract method the task must implement, include one line showing the concrete call from the base class:
+
+```python
+# From base.extract() — called once per row returned by _query_rows():
+avro_dict = self._to_avro_dict(row)  # row is a single sqlite3.Row, not a list
+```
+
+This is not extractor-specific — it applies to any ABC pattern: parsers, handlers, strategies, validators. If the base class orchestrates calls to the abstract method, show it. One line prevents the model from assuming the wrong type, wrong cardinality, or a different calling convention than what the base actually uses.
+
 **Interface contracts, not implementation code.** Define class names, method signatures with type hints, and behavioral specs. Do not include method bodies — the small model writes the implementation to pass the pre-written tests.
 
 **Tests are Claude Code's responsibility.** Claude Code writes complete, verified test code during scaffold (Step 3b). Task docs embed the test file verbatim in the `## Tests` section. The small model's job is to implement the code to pass them — not to write tests.

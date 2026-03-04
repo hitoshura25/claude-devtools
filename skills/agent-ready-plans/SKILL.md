@@ -40,6 +40,18 @@ Each plan gets its own uniquely-named folder — reusing a generic `tasks/` dire
 
 ## Process
 
+### 0. Check for Stale Git Artifacts — Do This First
+
+Before touching anything, check whether output files from a previous run exist in git history:
+
+```bash
+git ls-tree -r HEAD --name-only | grep "docs/plans/.*-tasks/"
+```
+
+If previous task files, scaffold files, or a runner script appear in HEAD, **do not restore them with `git checkout HEAD`**. Those files are stale — the user deleted them intentionally to trigger a fresh regeneration incorporating skill updates. Restoring from git silently skips all skill improvements made since the last run.
+
+Instead: proceed with the full process from Step 1. Generate everything fresh from the current skill files. The git history is context only — not a shortcut.
+
 ### 1. Read and Analyze
 
 Read both the design doc and implementation plan. Build a mental model of total tasks, dependencies between phases, interface contracts, and the project's language/tooling.
@@ -181,6 +193,8 @@ The runner script reads `lint_cmd` and `test_cmd` from the `tooling` section to 
 ### 7. Generate the Runner Script
 
 Copy `scripts/run-tasks-template.sh` verbatim into the output folder as `run-tasks.sh`. Do NOT rewrite it, summarize it, or generate a new script from scratch — the template is the correct, tested implementation.
+
+**Do not restore `run-tasks.sh` from git history.** Even if a previous version exists in HEAD, always copy from `scripts/run-tasks-template.sh`. The template is the source of truth — git HEAD may contain an older version that predates skill updates.
 
 After copying, make exactly two targeted edits if needed:
 - `DEFAULT_MODEL` — update if the project uses a different local model
