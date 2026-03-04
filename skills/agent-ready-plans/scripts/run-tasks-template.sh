@@ -31,6 +31,8 @@ LOG_FILE="$TASKS_DIR/run-$(date +%Y%m%d-%H%M%S).log"
 DEFAULT_MODEL="lm_studio/qwen/qwen3-coder-30b"
 
 # Read tooling config from manifest
+# TEST_CMD is the global suite — used only for the final full-suite check at the end.
+# Each task uses its own per-task test_command from the manifest during execution.
 if [[ -f "$MANIFEST" ]]; then
   LINT_CMD=$(python3 -c "import json; print(json.load(open('$MANIFEST')).get('tooling',{}).get('lint_cmd',''))" 2>/dev/null || echo "")
   TEST_CMD=$(python3 -c "import json; print(json.load(open('$MANIFEST')).get('tooling',{}).get('test_cmd',''))" 2>/dev/null || echo "")
@@ -98,7 +100,8 @@ if [[ -n "$LINT_CMD" ]]; then
   echo "║  Lint: $LINT_CMD (auto-lint is ON by default)"
 fi
 if [[ -n "$TEST_CMD" ]]; then
-  echo "║  Test: $TEST_CMD (auto-test ON)"
+  echo "║  Test: per-task test_command from manifest (auto-test ON)"
+  echo "║  Final check: $TEST_CMD"
 fi
 echo "╚══════════════════════════════════════════════╝"
 echo ""
@@ -177,6 +180,27 @@ print('true' if task.get('pre_validated', False) else 'false')
     continue
   fi
 
+  # ── Look up per-task test command from manifest ─────────
+  # Each task has its own test_command scoped to its own test file.
+  # This prevents aider from running the global test suite during a task's
+  # retry loop — which would cause cascade failures when future test files
+  # (e.g. test_dag.py) exist but aren't passing yet.
+  TASK_TEST_CMD=$(python3 -c "
+import json, sys
+m = json.load(open('$MANIFEST'))
+task = next((t for t in m.get('tasks', []) if t.get('file') == '$BASENAME'), None)
+if task is None or not task.get('test_command', '').strip():
+    print('')
+else:
+    print(task['test_command'])
+" 2>/dev/null || echo "")
+
+  # Fall back to global TEST_CMD if no per-task command is set
+  if [[ -z "$TASK_TEST_CMD" && -n "$TEST_CMD" ]]; then
+    TASK_TEST_CMD="$TEST_CMD"
+    echo "   ⚠  No per-task test_command in manifest — falling back to global test command"
+  fi
+
   # Core aider args
   AIDER_ARGS=(
     --model "$MODEL"
@@ -193,9 +217,10 @@ print('true' if task.get('pre_validated', False) else 'false')
     AIDER_ARGS+=(--lint-cmd "$LINT_CMD" --auto-lint)
   fi
 
-  # Test: aider runs test_cmd as-is (no filenames appended), so 'cd' is safe here.
-  if [[ -n "$TEST_CMD" ]]; then
-    AIDER_ARGS+=(--test-cmd "$TEST_CMD" --auto-test)
+  # Test: use per-task test_command so aider only sees this task's tests.
+  # The global TEST_CMD is reserved for the final full-suite check after all tasks complete.
+  if [[ -n "$TASK_TEST_CMD" ]]; then
+    AIDER_ARGS+=(--test-cmd "$TASK_TEST_CMD" --auto-test)
   fi
 
   # Capture aider output to detect reflection exhaustion
@@ -224,10 +249,11 @@ print('true' if task.get('pre_validated', False) else 'false')
   # Don't rely solely on aider's exit code — run tests independently
   # to catch failures aider may have given up on (reflection exhaustion
   # exits 0, not non-zero).
-  if [[ -n "$TEST_CMD" ]]; then
+  # Use per-task test command, not the global suite.
+  if [[ -n "$TASK_TEST_CMD" ]]; then
     echo "   Verifying tests independently..."
     set +e
-    VERIFY_OUTPUT=$(eval "$TEST_CMD" 2>&1)
+    VERIFY_OUTPUT=$(eval "$TASK_TEST_CMD" 2>&1)
     VERIFY_EXIT=$?
     set -e
 
@@ -287,6 +313,27 @@ if [[ -n "$DEFERRED_TASKS" && "$DEFERRED_HIT" != true ]]; then
     echo "  then re-run to execute them."
     echo "═══════════════════════════════════════════════"
     exit 0
+  fi
+fi
+
+# ── Final full-suite check ────────────────────────────────────
+# Now that all tasks are done, run the global test suite once as a
+# sanity check that nothing broke across task boundaries.
+if [[ -n "$TEST_CMD" && "$DRY_RUN" != true ]]; then
+  echo ""
+  echo "Running final full-suite check..."
+  set +e
+  FINAL_OUTPUT=$(eval "$TEST_CMD" 2>&1)
+  FINAL_EXIT=$?
+  set -e
+  if [[ $FINAL_EXIT -ne 0 ]]; then
+    echo "⚠️  Full suite check failed — some cross-task integration may be broken."
+    echo "$FINAL_OUTPUT" | tail -20
+    echo "" >> "$LOG_FILE"
+    echo "=== Final full-suite check FAILED ===" >> "$LOG_FILE"
+    echo "$FINAL_OUTPUT" >> "$LOG_FILE"
+  else
+    echo "✅  Full suite passed."
   fi
 fi
 
