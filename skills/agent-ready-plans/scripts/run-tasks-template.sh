@@ -17,6 +17,19 @@
 #   --yes-always      Always say yes to every confirmation
 #   --no-git          Disable git integration
 #   --no-check-update Skip checking for aider updates on launch
+#
+# NOTE — generation length cap:
+#   Aider's --timeout flag only caps the HTTP *connection setup* phase.
+#   It does NOT interrupt an in-progress streaming response. Once the model
+#   starts generating (stream: true, which LM Studio uses by default), the
+#   timeout never fires regardless of how long generation takes.
+#
+#   The reliable fix is a server-side generation cap in LM Studio:
+#   Settings → "Max Tokens to Predict" — set to a value like 8192.
+#   This hard-caps token output per request, preventing indefinite
+#   summarizer or reflection spirals at the model level rather than the
+#   HTTP level. Alternatively, configure aider with stream: false in
+#   ~/.aider.conf.yml, which makes --timeout effective again.
 
 set -euo pipefail
 

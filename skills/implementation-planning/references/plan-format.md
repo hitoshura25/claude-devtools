@@ -141,6 +141,38 @@ The interface block is the most important part of the task. It defines class nam
 - Import paths for project-internal modules the component uses
 - Which task created each dependency
 
+### Verify ABC Fit Before Writing the Interface
+
+When a task subclasses an abstract base class, verify that the base class calling contract actually fits the component's data shape *before* writing the interface block. This is the single most common source of tasks that spiral: the model implements the specified method, the base class calls it with the wrong type or cardinality, and the model exhausts all reflections trying to reconcile a mismatch that was baked into the plan.
+
+**The check:** For each abstract method the task must implement, ask: what does the base class pass in, and what does this component actually need to receive?
+
+- If the base class calls `_process(item)` once per item and the component processes one item at a time → **fits. Specify the method as written.**
+- If the base class calls `_process(item)` once per item but the component needs to aggregate multiple items into one output (e.g., grouping child rows under a parent) → **does not fit. The component must override the orchestrating method** (`extract()`, `run()`, `handle()` — whatever the base class uses to drive the abstract calls), not just implement `_process`.
+- If the base class contract is unclear from the plan alone → **read the base class source before specifying the interface.**
+
+When the base class does not fit, specify the override in the interface contract explicitly:
+
+```python
+class HeartRateExtractor(BaseRecordExtractor):
+    """Overrides extract() directly — groups series rows by session."""
+
+    def extract(
+        self,
+        conn: sqlite3.Connection,
+        seen_uuid_hexes: set[str],
+    ) -> ExtractResult:
+        """Override: joins parent + series tables, groups rows by session,
+        returns one record per session with a samples list."""
+
+    # _query_rows and _to_avro_dict are NOT used — override is at extract() level
+```
+
+And in the Behavior section, state the override explicitly:
+> "Overrides `extract()` directly. Does not use `_to_avro_dict()` — the base class template does not fit this component's one-session-many-rows data shape."
+
+This pattern applies to any ABC: if the base class drives abstract calls with a granularity that doesn't match the component, the task must specify the correct override level — not the abstract method the base class expects.
+
 ## Writing Behavior Specs
 
 Behavior specs replace the complete test code from the old format. They tell the model *what* to test without prescribing *how* to test it. The model writes its own fixtures, mocks, and assertions.

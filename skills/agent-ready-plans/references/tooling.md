@@ -214,9 +214,54 @@ Create a conftest fixture for any external dependency that meets these criteria:
 - Has a fluent or chained API (e.g., `service.files().list().execute()`)
 - Requires simulating I/O (downloads writing to buffers, uploads capturing bytes)
 - Has a connect/use/close lifecycle (database connections, message brokers)
+- **Has a positional argument trap** — a call where argument order is non-obvious, easy to swap, and wrong usage fails at runtime rather than definition time (see below)
 - Is used by multiple tasks in the plan
 
 Common candidates: Google API clients, boto3/S3, pika/RabbitMQ, database drivers, HTTP clients with session management.
+
+#### Positional Argument Traps
+
+Some library functions have positional arguments whose order cannot be inferred from the function name or the argument values themselves. Small models consistently get these wrong — not because they lack reasoning ability, but because the correct order isn't in their training data or is counterintuitive. When the model gets it wrong, the error appears at runtime (often as a confusing TypeError or silent data corruption), not at the point of writing the call. The model then exhausts its reflections guessing at fixes.
+
+**Signal:** A function call where:
+1. Two or more positional arguments have the same or similar types (both are strings, both are dicts, both are file-like objects)
+2. The argument names don't appear at the call site (positional-only or positional-in-practice)
+3. Swapping the arguments produces a plausible-looking but incorrect call
+
+**Fix:** Mock the call in conftest so the model never writes it directly. The fixture captures what was passed so tests can assert on the arguments.
+
+**Example — `fastavro.writer(fo, schema, records)`:**
+The signature is `writer(fo, schema, records)` but models consistently write `writer(fo, records, schema)` or `writer(fo, records)`. Both are plausible from the name alone; the error only surfaces when fastavro tries to parse `records` as a schema dict. Rather than documenting the correct order in the task spec (which the model may not follow), mock fastavro in conftest:
+
+```python
+@pytest.fixture
+def mock_fastavro_writer():
+    """Patches fastavro.writer to avoid positional arg order errors.
+    
+    Captures (schema, records) passed to the call for test assertions.
+    Usage:
+        def test_write(mock_fastavro_writer):
+            # ... call your writer
+            schema, records = mock_fastavro_writer["last_call"]
+            assert schema["type"] == "record"
+    """
+    with patch("plugins.writers.minio_writer.fastavro.writer") as mock_writer:
+        state = {"last_call": None}
+
+        def capture(fo, schema, records):
+            state["last_call"] = (schema, records)
+
+        mock_writer.side_effect = capture
+        yield state
+```
+
+This pattern generalises to any library with the same signal: identify the trap during plan writing, create a fixture that captures the call, and let tests assert on what was passed rather than whether the call succeeded.
+
+**Other examples of the same pattern** (not exhaustive — apply the signal check to any library in the plan):
+- `struct.pack(fmt, *values)` — format string and values easy to swap
+- `re.sub(pattern, repl, string)` — all strings, order non-obvious
+- Some SQL driver `execute(query, params)` variants where param binding style differs by driver
+- Serialization libraries that take `(output, schema, data)` or `(output, data, schema)` depending on version
 
 ### How to Create Them
 
