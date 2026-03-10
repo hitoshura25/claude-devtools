@@ -29,6 +29,25 @@ This applies to any abstract/interface pattern across any language: parsers, han
 
 ---
 
+## Task Scope: Component Tasks vs Wiring Tasks
+
+This is the most important structural rule in the skill. Getting it wrong causes cascade failures that block entire phases.
+
+**Component tasks create files only.** A component task produces one source file and one test file. It does not touch any shared file — no DAG, no registry, no router, no dispatcher. The component is independently testable in complete isolation. Its `test_command` runs only its own test file.
+
+**Wiring tasks modify shared files only.** A wiring task reads the actual produced class names from earlier component tasks and registers them into an orchestrating file. It creates no new source files. It runs only after all components it wires are complete and verified. It is always deferred — generated after component tasks run, by reading actual produced code.
+
+**Why this matters:** If a component task also modifies a shared orchestrating file, then every subsequent component task that runs that orchestrator's test as part of its gate will fail — not because the component is wrong, but because the orchestrator was degraded by an earlier task. A single broken wiring step cascades to all downstream components. Keeping wiring separate means a broken orchestrator cannot cascade-fail components that were individually correct.
+
+This mirrors how engineering teams handle dependencies: engineers build their feature branches in isolation, test them independently, and merge to a shared orchestration layer only after all components are verified. The wiring task is the merge step.
+
+**In practice:**
+- Task doc has `Files: Create:` only → correct component task
+- Task doc has `Files: Modify:` alongside `Files: Create:` → split it. The component creation is one task; the wiring is a separate deferred task.
+- Task doc has `Files: Modify:` only → correct wiring task (deferred)
+
+---
+
 ## Writing Correct Tests
 
 Claude Code authors tests during Step 3b. The tests must be correct — both logically sound and mechanically robust. Incorrect tests are worse than no tests: the small model passes them trivially while the real behavior goes unvalidated, or gets stuck in a failing loop it can't escape.
@@ -82,10 +101,6 @@ assert(result === filteredRows)       // tests actual logic
 - For error handling: assert the specific exception/error type and message where specified
 - For stateful operations: assert the state change, not just the absence of errors
 
-### Test Scope Rule
-
-**A task's `test_command` covers only the test file for the component it creates.** Tests for files the task *modifies* (registries, routers, DAGs, orchestrators) belong in the global full-suite check — not in the per-task gate. Including a shared orchestrator's test file in a component task's test command means a broken orchestrator will cascade-fail all downstream component tasks, even when those components are individually correct.
-
 ### Stub Design
 
 Stubs must be designed so mutation testing is meaningful:
@@ -104,15 +119,16 @@ See `stacks/<language>-<framework>.md` for language-specific stub patterns (e.g.
 
 ## Deferred Tasks
 
-Some tasks cannot be accurately written before the implementation tasks run, because they depend on the exact interfaces, signatures, or structures that earlier tasks produce. Small models may deviate from the plan — slightly different parameter names, return types, class hierarchies.
+**All wiring tasks are deferred.** Wiring tasks register components into shared orchestrating files (DAGs, routers, registries, dispatchers). They cannot be written upfront because:
+1. Small models may produce slightly different class names, import paths, or module structures than the plan specifies
+2. The wiring must reflect what was actually produced, not what was planned
 
-**Mark a task as deferred when it:**
-- Tests functions or classes created by multiple earlier tasks (integration tests, end-to-end tests)
-- Wires together components whose exact APIs are defined by other tasks (orchestrators, routers, dispatchers)
-- Modifies files created by earlier tasks in ways that depend on their exact content
+**Other tasks are also deferred when they:**
+- Test functions or classes created by multiple earlier tasks (integration tests, end-to-end tests)
+- Depend on the exact content of files produced by earlier tasks
 
 **No need to defer tasks that:**
-- Only test code within the same task doc (unit tests)
+- Only test code within the same task doc (unit tests for a component)
 - Create standalone components with no cross-task interface dependencies
 - Follow a well-defined base type pattern where the interface is fixed upfront
 
@@ -123,20 +139,23 @@ Some tasks cannot be accurately written before the implementation tasks run, bec
 3. Invoke Claude Code to generate the deferred task docs — read actual implementation files, not the plan.
 4. Resume the runner with `--start N`.
 
-**Example manifest entry:**
+**Example — wiring task manifest entry:**
 ```json
 {
-  "file": "25-task-12.1-integration-test.md",
-  "task_id": "12.1",
-  "title": "Pipeline Integration Tests",
-  "estimated_complexity": "complex",
+  "file": "20-task-6.1-wire-extractors-into-dag.md",
+  "task_id": "6.1",
+  "title": "Wire All Extractors into DAG",
+  "phase": "Wiring",
+  "files_modified": ["dags/health_connect_ingest.py"],
+  "test_command": "cd services/airflow-ingestion && uv run pytest tests/test_dag.py -x -q",
+  "estimated_complexity": "moderate",
   "deferred": true,
-  "deferred_reason": "Tests real function signatures from all implementation tasks. Must use actual interfaces, not planned ones.",
-  "depends_on": ["8.1", "9.1", "10.1", "11.1"]
+  "deferred_reason": "Must read actual produced class names and import paths from tasks 3.1–5.6. Small models may deviate from planned names.",
+  "depends_on": ["3.1", "3.2", "4.1", "4.2", "5.1", "5.2", "5.3", "5.4", "5.5", "5.6"]
 }
 ```
 
-When generating a deferred task doc, read the actual source files for imports, signatures, and parameter names. Do not reference the original plan — the implementation is the source of truth.
+When generating a deferred task doc, read the actual source files for imports, class names, and registration patterns. Do not reference the original plan — the implementation is the source of truth.
 
 ---
 
@@ -145,8 +164,7 @@ When generating a deferred task doc, read the actual source files for imports, s
 If a task doc exceeds ~2000 tokens:
 
 1. Split by responsibility — e.g., "create config" and "create the component + tests" as separate tasks
-2. Keep "create file" and "modify file" as separate tasks
-3. **Never split the implementation from its pre-written tests.** The task doc embeds the test file — the model needs both to do its job.
+2. **Never split the implementation from its pre-written tests.** The task doc embeds the test file — the model needs both to do its job.
 
 Update the manifest to reflect the split and keep sequential numbering intact.
 

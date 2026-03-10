@@ -57,18 +57,30 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 ...
 
-## Phase N: Integration Tests (deferred)
+## Phase N: Wiring
 
-### Task N.1: [Integration Test Name] *(deferred)*
+### Task N.1: [Wire Components into Orchestrator] *(deferred)*
 
-**Deferred:** Generate after implementation tasks complete — tests depend
-on real function signatures and import paths from earlier tasks.
+**Deferred:** Generate after all component tasks complete — reads actual
+produced class names and import paths from earlier tasks.
+
+**Modifies:** `path/to/orchestrator.ext`
+
+**What to wire:**
+- [Each component to register, with its import path]
+
+**Depends on:** Tasks X.Y, X.Z, ...
+
+## Phase N+1: Integration Tests *(deferred)*
+
+### Task N+1.1: [Integration Test Name] *(deferred)*
+
+**Deferred:** Generate after wiring task completes.
 
 **What to test:**
 - [Description of integration scenarios]
-- [Components being integrated]
 
-**Depends on:** Tasks X.Y, X.Z, ...
+**Depends on:** Task N.1
 ```
 
 ## Task Template
@@ -77,13 +89,14 @@ Each task defines an interface contract that the small model implements. The pre
 
 **Tests and implementation belong in the same task.** Claude Code writes the test file during the scaffold phase and embeds it in the task doc. The small model implements against it. Never split the test file into a separate task from its implementation.
 
+**Component tasks only create files — they never modify shared files.** No `Modify:` entries in component tasks. Wiring (adding to a registry, DAG, router, or dispatcher) is always a separate, dedicated task that runs after all components are complete. See § "Phasing Guidelines" below.
+
 ```markdown
 ### Task X.Y: [Component Name]
 
 **Files:**
 - Create: `exact/path/from/project/root/component.ext`
 - Create: `tests/exact/path/test_component.ext`
-- Modify: `exact/path/to/existing.ext` (add new entry to REGISTRY)
 
 **Interface:**
 
@@ -105,10 +118,9 @@ class ComponentName extends BaseClass {
 
 **Dependencies:**
 - Imports `BaseClass` from `path/to/base.ext` (created in Task X.Y)
-
-**Wiring:**
-- Add import and append `ComponentName()` to `REGISTRY` in `path/to/registry.ext`
 ```
+
+Note the absence of a `Wiring:` section. Component tasks do not touch orchestrating files. The model creates its component and its tests — nothing else.
 
 ## Writing Interface Contracts
 
@@ -225,48 +237,44 @@ Use this exact mock pattern:
   mockStorageClient.upload.mockResolvedValue({ key: 'test' })
 ```
 
-The first tells the model what constraints to satisfy. The second gives it code that might have a subtle bug.
-
 ## Phasing Guidelines
 
-Group tasks into phases that build on each other.
+The phase structure mirrors how an engineering team handles dependencies: build components in isolation first, then wire them together once all components are verified.
 
 ```
-Phase 1: Project Scaffolding (Claude Code creates directly — not a task)
-Phase 2: Core Abstractions (base types, shared models, config)
-Phase 3: Infrastructure Clients (external service wrappers)
-Phase 4: Primary Components (main business logic)
-Phase 5: Orchestration (scheduler, router, dispatcher)
-Phase 6: Remaining Components (additional implementations of Phase 4 patterns)
-Phase 7: Deployment (Docker, infra config)
-Phase 8: Integration Tests (deferred)
+Phase 1: Project Scaffolding     (Claude Code creates directly — not a task)
+Phase 2: Core Abstractions       (base types, shared models, config)
+Phase 3: Infrastructure Clients  (external service wrappers)
+Phase 4: Primary Components      (main business logic — create files only, no wiring)
+Phase 5: Secondary Components    (additional component implementations)
+Phase 6: Wiring                  (dedicated tasks to register components into orchestrators)
+Phase 7: Deployment              (Docker, infra config)
+Phase 8: Integration Tests       (deferred — generated after wiring tasks complete)
 ```
 
-**Phase 1 is special:** The project scaffold is created directly by Claude Code — not delegated to a small model. The plan lists what the scaffold contains so Claude Code knows what to create.
+**Phase 1 is special:** The project scaffold is created directly by Claude Code — not delegated to a small model.
 
-**The critical ordering rule:** Orchestration tasks (Phase 5) come *after* the components they initially register but *before* later phases that add more. Phase 6 tasks each include a wiring step to register themselves.
+**Component phases (2–5) create files only.** Each task produces its own source file and test file. No task in these phases touches a shared orchestrating file (DAG, router, registry, dispatcher). A component is independently testable in complete isolation — its test_command runs only its own test file.
 
-**When a later task must register itself in an earlier component,** include a "Modify" entry and a "Wiring" section:
+**Phase 6 — Wiring — is always deferred.** Wiring tasks read the actual produced class names and import paths from earlier tasks and register them into orchestrators. They cannot be written upfront because small models may produce slightly different names or structures than planned. Generate wiring task docs after Phase 2–5 tasks complete, by reading the actual source files.
 
-```markdown
-### Task 6.3: FooExtractor
+A wiring task:
+- Only has `Modify:` entries — it creates no new source files
+- Reads actual produced class names from earlier tasks (not the plan)
+- Has its own test file for the orchestrator it modifies
+- Runs the orchestrator test as its `test_command`
 
-**Files:**
-- Create: `src/extractors/foo_extractor.ext`
-- Create: `tests/extractors/test_foo_extractor.ext`
-- Modify: `src/orchestrator.ext` (add FooExtractor to REGISTRY)
+**Phase 8 — Integration Tests — is also deferred,** and depends on Phase 6 wiring being clean.
 
-**Wiring:**
-- Import FooExtractor in orchestrator
-- Append FooExtractor() to REGISTRY list
-```
-
-This is the single most common source of decomposition bugs. See `wiring-completeness.md` for the full checklist.
+This structure means a broken wiring task cannot cascade-fail component tasks — component tasks were already verified in isolation before wiring ran. And a broken component cannot cascade-fail sibling components — each is isolated. The only cascades that can occur are within the wiring and integration phases, where dependencies are real and expected.
 
 ## Deferred Tasks
 
-Mark tasks as deferred when they depend on exact function signatures, class hierarchies, or import paths that earlier tasks produce. Include enough detail for Claude Code to generate them later:
-- What components are being integrated
+Mark tasks as deferred when they depend on exact function signatures, class hierarchies, or import paths that earlier tasks produce. This always includes wiring tasks and integration tests.
+
+Include enough detail for Claude Code to generate them later:
+- Which files to read for actual class names and import paths
+- What the orchestrator expects (interface, registration pattern)
 - What scenarios to test
 - Which tasks they depend on
 
@@ -276,4 +284,4 @@ Mark tasks as deferred when they depend on exact function signatures, class hier
 - **Moderate tasks** (one class + its tests): 1 task per component
 - **Complex tasks** (multiple interacting files): split by responsibility, keeping tests with the component they test
 
-If a task has more than 3 files in its "Create" list, consider splitting it.
+If a task has more than 2 files in its "Create" list, consider splitting it. Wiring tasks are an exception — they may modify several files but create none.
