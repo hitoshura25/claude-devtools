@@ -392,6 +392,32 @@ Available conftest fixtures (use these instead of writing your own mocks):
 
 The names and one-line descriptions are enough — the model adds the fixture name to its test function parameters, pytest injects it, and the test can configure return values without touching mock internals.
 
+### Mocking Framework Modules
+
+When the target framework (e.g. Airflow, Django, Flask) is not installed in the dev environment, a common pattern is to stub every anticipated import path in `sys.modules` at conftest import time:
+
+```python
+_AIRFLOW_MOCKS = [
+    "airflow",
+    "airflow.models",
+    "airflow.operators",
+    "airflow.operators.python",
+    "airflow.utils",
+    "airflow.utils.dates",
+]
+for _mod in _AIRFLOW_MOCKS:
+    if _mod not in sys.modules:
+        sys.modules[_mod] = MagicMock()
+```
+
+The list must include **every dotted path that will appear in an `import` statement** in the implementation — not just the top-level package. `airflow.utils` and `airflow.utils.task_group` are separate entries; if only `airflow.utils` is registered, Python sees it as a `MagicMock` object (not a package) and raises `ModuleNotFoundError: No module named 'airflow.utils.task_group'; 'airflow.utils' is not a package` when the implementation does `from airflow.utils.task_group import TaskGroup`.
+
+The right mental model: for any import path `a.b.c` the implementation will use, register `a`, `a.b`, and `a.b.c` as separate `sys.modules` entries.
+
+**Verification step**: After writing the conftest, run a bare import of the implementation module in the test environment with only the conftest loaded — before running any actual tests — and confirm no `ModuleNotFoundError` surfaces. This is the earliest you can catch a missing submodule entry, before the small model ever sees it.
+
+During plan writing, scan the implementation spec for every `from X.Y.Z import ...` line and cross-check each against the mock list. If the plan says "this module is mocked in tests", the conftest must actually register it. A task doc that tells the model "`TaskGroup` is mocked" when the conftest doesn't register `airflow.utils.task_group` is a broken promise — the model will write the import, the test will fail with a `ModuleNotFoundError`, and the small model has no way to fix it (the fix is in conftest, not in the implementation file).
+
 ### Verifying Fixtures
 
 After creating conftest fixtures, write a minimal smoke test that imports and uses each one. This catches patch target path errors before the small model encounters them. A simple test per fixture:
@@ -408,6 +434,8 @@ def test_mock_pika_connection_fixture(mock_pika_connection):
 ```
 
 Run `pytest` and verify these pass before generating task docs. If a patch target is wrong (e.g., the implementation file doesn't exist yet), adjust the patch path to match where the implementation will import from — the plan's "Files to Create" section tells you the exact module paths.
+
+**For persistence classes (SQLite, file-based stores, etc.)**: when writing the mutation-gate stub, deliberately omit the schema initialization from `__init__` — leave it as `pass`. If the tests pass against this stub, they won't catch a real implementation that forgets to call `CREATE TABLE` (or equivalent) before use. You want the tests to fail against the empty stub on the very first call to any method that depends on the schema. If they don't, add an assertion that exercises the schema-dependent path immediately after construction — for example, calling `mark_seen([], "T")` on a freshly built `UUIDStore(":memory:")` — so the mutation gate confirms the tests are sensitive to missing initialization.
 
 ## Mutation Testing
 
