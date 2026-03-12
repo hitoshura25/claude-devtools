@@ -136,6 +136,7 @@ The interface block defines class/function names, method signatures, parameter t
 - Method bodies
 - Private/internal methods
 - Standard library imports
+- Module-level instantiation of environment-dependent objects (e.g. `settings = Settings()`, `client = DbClient()`). These objects read from environment variables, files, or network at construction time — none of which exist in a test environment. Every file that imports the module triggers the constructor at import time, causing collection failures across all transitively-importing test files before a single test runs. Specify the class only; callers construct instances inside their own callables when they need them.
 
 **Do include in Dependencies:**
 - Import paths for project-internal modules the component uses

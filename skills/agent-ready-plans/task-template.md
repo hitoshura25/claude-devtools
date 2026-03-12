@@ -2,6 +2,8 @@
 
 Every task file follows this structure. The goal: a small model should be able to implement the component by reading only this one file — no other context needed. The task describes *what* to build and *what it should do*, not the exact code to write.
 
+**Component tasks have no `## Files to Modify` or `## Wiring` section.** Component tasks create files only — they never touch shared orchestrating files (DAGs, registries, routers, dispatchers). Modifications to shared files are collected into dedicated wiring tasks that run after all components complete, and those wiring tasks are always deferred. See `references/writing-guide.md` § "Task Scope: Component Tasks vs Wiring Tasks".
+
 ---
 
 ```markdown
@@ -34,12 +36,6 @@ explanations, test commands, suggestions, or any conversational text.
 
 - `exact/path/from/project/root/module.py`
 - `exact/path/from/project/root/tests/test_module.py`
-
-## Files to Modify
-
-[If this task wires into an existing component.]
-
-- `exact/path/to/existing.py` (add import and append to REGISTRY list)
 
 ## Interface Contract
 
@@ -88,14 +84,6 @@ and which task created it.]
 
 - `from plugins.path.base import BaseClass` (Task 03)
 - `from config.settings import Settings` (Task 02)
-
-## Wiring
-
-[How to connect this component into the rest of the system. Only present
-when this task modifies existing files.]
-
-- Add `from plugins.path.new_module import ComponentName` to imports in `path/to/registry.py`
-- Append `ComponentName()` to `REGISTRY` list in `path/to/registry.py`
 
 ## Commit
 
@@ -176,12 +164,12 @@ The small model must not modify this section. Its only job is to write the imple
 
 ### Dependencies
 
-Tells the model what it can import from prior tasks. Include exact import paths — the model uses these verbatim. This replaces the old approach of inlining interface definitions in every task doc.
+Tells the model what it can import from prior tasks. Include exact import paths — the model uses these verbatim.
 
-### Wiring
+### Why there is no Wiring or Files to Modify section
 
-Only present when the task modifies existing files (e.g., adding to a registry). State *what* to add and *where* — the model handles the mechanics.
+Component tasks do not wire themselves into shared files. Adding a new extractor to a DAG, registering a handler in a router, or appending to a registry are all modifications to shared orchestrating files — and shared file modifications belong exclusively in dedicated wiring tasks that run after all components are complete.
 
-### Files to Create / Modify
+This prevents cascade failures: if wiring is inline with a component task, and the shared file's test is part of that task's gate, then a broken shared file fails every subsequent component task regardless of whether those components are individually correct. Separating wiring into its own deferred phase means each component is tested in complete isolation, and the wiring task is the only task that can affect shared-file test results.
 
-Listed explicitly so aider's file-tracking knows what's in scope. Aider performs best when it knows upfront which files it will touch.
+If you find yourself writing a `## Files to Modify` or `## Wiring` section in a component task doc, stop — that content belongs in a deferred wiring task instead.

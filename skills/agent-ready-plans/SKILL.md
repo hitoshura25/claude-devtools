@@ -123,12 +123,12 @@ Key principles for task docs:
 - **Explicit file paths** from project root. Never relative, never ambiguous.
 - **Interface contracts, not implementation code.** Provide class/function names, method signatures with type annotations, and behavioral specs. Do not include method bodies.
 - **Tests are pre-written by Claude Code.** The actual test code is in the `## Tests` section (written in Step 3b). Remove prose `## Test Scenarios` — replace with the `## Tests` section containing the real test file.
-- **Test scope:** A task's `test_command` covers only the test file for the component it *creates*. Do not include tests for files the task *modifies* (orchestrators, registries, routers) — a broken orchestrator would then cascade-fail all downstream tasks. Orchestrator tests belong in the global full-suite check only.
+- **Component tasks create files only — never modify shared files.** A component task's `## Files to Create` lists only the new source file and its test file. It never has a `## Files to Modify` or `## Wiring` section. Modifications to shared orchestrating files (DAGs, routers, registries, dispatchers) are collected into dedicated wiring tasks in a later phase. See `references/writing-guide.md` § "Task Scope: Component Tasks vs Wiring Tasks".
+- **Test commands are scoped to the task's own test file.** The `test_command` in the manifest runs only the test file the task creates. Never include shared orchestrator test files (e.g., `test_dag.py`) in a component task's `test_command` — a broken orchestrator would cascade-fail all downstream tasks whose implementations are individually correct.
 - **Environment constraints.** State what's mocked, what's not installed, what can't make real connections.
-- **Wiring steps.** When a task modifies existing files, state what to add and where.
 - **One commit per task** with a conventional commit message.
 
-**Deferred tasks:** Some tasks depend on exact interfaces produced by earlier tasks. Mark these as `"deferred": true` in the manifest and do not generate their task doc files yet. See `references/writing-guide.md` for guidance.
+**Deferred tasks:** Wiring tasks (which modify shared orchestrating files) and integration tests are always deferred — generated after component tasks complete by reading actual produced code. Mark these as `"deferred": true` in the manifest and do not generate their task doc files yet. See `references/writing-guide.md` for guidance.
 
 Read `references/writing-guide.md` for deeper guidance on writing style, splitting large tasks, complexity ratings, and deferred task identification.
 
@@ -164,6 +164,20 @@ Create `00-manifest.json` with task metadata and a `tooling` section:
       "estimated_complexity": "simple"
     },
     {
+      "file": "18-task-6.1-wire-components.md",
+      "task_id": "6.1",
+      "title": "Wire All Extractors into DAG",
+      "phase": "Wiring",
+      "files_created": [],
+      "files_modified": ["services/my-service/dags/pipeline.py",
+                          "services/my-service/tests/test_dag.py"],
+      "test_command": "cd services/my-service && uv run pytest tests/test_dag.py -x -q",
+      "estimated_complexity": "moderate",
+      "deferred": true,
+      "deferred_reason": "Reads actual class names and import paths from all component tasks. Must use real implementations, not planned ones.",
+      "depends_on": ["2.1", "2.2", "3.1", "4.1", "4.2", "5.1"]
+    },
+    {
       "file": "20-task-8.1-integration-test.md",
       "task_id": "8.1",
       "title": "Pipeline Integration Tests",
@@ -174,7 +188,7 @@ Create `00-manifest.json` with task metadata and a `tooling` section:
       "estimated_complexity": "complex",
       "deferred": true,
       "deferred_reason": "Tests real function signatures from all implementation tasks.",
-      "depends_on": ["2.1", "2.2", "3.1", "5.1"]
+      "depends_on": ["6.1"]
     }
   ]
 }
@@ -205,6 +219,6 @@ Generate task files sequentially in the main session. Write each file to disk be
 | `task-template.md` | Step 5 — complete template with all sections |
 | `references/tooling.md` | Steps 2, 3, 3b — tooling discovery, fixture criteria, mutation gate |
 | `references/stacks/<language>-<framework>.md` | Steps 2, 3, 3b — language-specific install commands, lint wrapper, fixture examples, stub patterns, mutation tool |
-| `references/writing-guide.md` | Steps 3b, 5 — test correctness rules, stub design, task splitting, complexity ratings |
+| `references/writing-guide.md` | Steps 3b, 5 — test correctness rules, stub design, task scope rules, deferred task guidance |
 | `scripts/lint-ruff-wrapper.sh` | Step 3, Python/ruff projects — copy into tasks folder, update `RUFF_BIN` |
 | `scripts/run-tasks-template.sh` | Step 7 — copy verbatim, make two targeted edits |
