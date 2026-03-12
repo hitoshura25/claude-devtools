@@ -59,15 +59,21 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 ## Phase N: Wiring
 
-### Task N.1: [Wire Components into Orchestrator] *(deferred)*
-
-**Deferred:** Generate after all component tasks complete — reads actual
-produced class names and import paths from earlier tasks.
+### Task N.1: [Wire Components into Orchestrator]
 
 **Modifies:** `path/to/orchestrator.ext`
 
 **What to wire:**
-- [Each component to register, with its import path]
+- `ComponentA` from `path/to/component_a.ext` (Task X.Y)
+- `ComponentB` from `path/to/component_b.ext` (Task X.Z)
+
+**Behavior:**
+- [What the orchestrator does after all components are registered]
+- [Any ordering constraints]
+
+**Test scenarios:**
+- [import_integrity]: All listed component classes are importable from their specified paths
+- [orchestrator_behavior]: [What to assert about the assembled system]
 
 **Depends on:** Tasks X.Y, X.Z, ...
 
@@ -75,7 +81,8 @@ produced class names and import paths from earlier tasks.
 
 ### Task N+1.1: [Integration Test Name] *(deferred)*
 
-**Deferred:** Generate after wiring task completes.
+**Deferred:** Generate after wiring task completes — reads actual produced
+orchestrator to derive end-to-end scenarios.
 
 **What to test:**
 - [Description of integration scenarios]
@@ -215,6 +222,28 @@ Write scenarios precise enough that Claude Code can derive correct assertions fr
 - Reference conftest fixtures by name when relevant
 - Include at least one error/empty case per component
 
+### Wiring Task Test Scenarios
+
+Wiring tasks have a required test scenario that component tasks do not:
+
+**`import_integrity`** — The pre-written test must explicitly import every class the wiring task will use, asserting each import succeeds. This test runs against the actual produced source files (not stubs), so it fails immediately if a small model drifted from a planned class name or module path.
+
+```python
+# Example — Python wiring task import integrity test
+from plugins.extractors.steps_extractor import StepsExtractor
+from plugins.extractors.blood_glucose_extractor import BloodGlucoseExtractor
+# ... one line per component
+
+def test_all_extractor_classes_importable():
+    assert StepsExtractor is not None
+    assert BloodGlucoseExtractor is not None
+    # ... one assertion per class
+```
+
+The test doc for every wiring task must include this scenario and the instruction: *"Do not import any class not listed here. Do not infer additional classes from file names or directory structure."*
+
+This is what makes wiring tasks safe to generate upfront alongside component tasks: the import integrity test catches any model drift at the wiring gate rather than letting a hallucinated import pass silently.
+
 ## Environment and Mocking Constraints
 
 State constraints the model must satisfy, not implementation instructions.
@@ -248,35 +277,45 @@ Phase 2: Core Abstractions       (base types, shared models, config)
 Phase 3: Infrastructure Clients  (external service wrappers)
 Phase 4: Primary Components      (main business logic — create files only, no wiring)
 Phase 5: Secondary Components    (additional component implementations)
-Phase 6: Wiring                  (dedicated tasks to register components into orchestrators)
+Phase 6: Wiring                  (dedicated tasks — generated upfront, sequenced after components)
 Phase 7: Deployment              (Docker, infra config)
 Phase 8: Integration Tests       (deferred — generated after wiring tasks complete)
 ```
 
 **Phase 1 is special:** The project scaffold is created directly by Claude Code — not delegated to a small model.
 
-**Component phases (2–5) create files only.** Each task produces its own source file and test file. No task in these phases touches a shared orchestrating file (DAG, router, registry, dispatcher). A component is independently testable in complete isolation — its test_command runs only its own test file.
+**Component phases (2–5) create files only.** Each task produces its own source file and test file. No task in these phases touches a shared orchestrating file (DAG, router, registry, dispatcher). A component is independently testable in complete isolation — its `test_command` runs only its own test file.
 
-**Phase 6 — Wiring — is always deferred.** Wiring tasks read the actual produced class names and import paths from earlier tasks and register them into orchestrators. They cannot be written upfront because small models may produce slightly different names or structures than planned. Generate wiring task docs after Phase 2–5 tasks complete, by reading the actual source files.
+**Phase 6 — Wiring — is generated upfront alongside component tasks.** Because interface contracts define exact class names and import paths, and because each wiring task's pre-written test includes an `import_integrity` scenario that validates those exact imports against produced files, wiring tasks do not need to be deferred. They are sequenced after their component dependencies in the runner — but the task docs and tests are written before the run starts. If a small model drifted on a name, the import integrity test fails at the wiring step, scoping the failure precisely instead of cascading silently.
 
 A wiring task:
 - Only has `Modify:` entries — it creates no new source files
-- Reads actual produced class names from earlier tasks (not the plan)
-- Has its own test file for the orchestrator it modifies
+- Has a pre-written test that includes `import_integrity` for every class it wires
+- Includes the instruction: *"Do not import any class not listed here"*
 - Runs the orchestrator test as its `test_command`
+- Is sequenced after all component tasks it depends on
 
-**Phase 8 — Integration Tests — is also deferred,** and depends on Phase 6 wiring being clean.
+**Phase 8 — Integration Tests — is deferred.** Integration tests validate the assembled system's end-to-end behavior, which cannot be fully specified until wiring is clean and the orchestrator's actual behavior is known. Generate integration test task docs after Phase 6 completes.
 
-This structure means a broken wiring task cannot cascade-fail component tasks — component tasks were already verified in isolation before wiring ran. And a broken component cannot cascade-fail sibling components — each is isolated. The only cascades that can occur are within the wiring and integration phases, where dependencies are real and expected.
+This structure means a broken wiring task cannot cascade-fail component tasks — components were already verified in isolation. And a broken component is caught at the wiring task's import integrity test, not silently embedded in passing orchestrator logic.
 
 ## Deferred Tasks
 
-Mark tasks as deferred when they depend on exact function signatures, class hierarchies, or import paths that earlier tasks produce. This always includes wiring tasks and integration tests.
+Only tasks that depend on the *runtime behavior* of the assembled system need to be deferred. This means **integration tests only**.
 
-Include enough detail for Claude Code to generate them later:
-- Which files to read for actual class names and import paths
-- What the orchestrator expects (interface, registration pattern)
-- What scenarios to test
+**Do not defer wiring tasks.** Wiring tasks can be written upfront because:
+1. Interface contracts define exact class names and import paths
+2. The `import_integrity` test scenario catches any model drift at the wiring gate
+3. The instruction "Do not import any class not listed here" prevents hallucinated imports
+
+**Defer integration tests** (Phase 8) because:
+- They test end-to-end behavior of the assembled system
+- That behavior cannot be fully specified until wiring is complete and verified
+- They may need to observe actual orchestrator behavior to write meaningful assertions
+
+Include enough detail in the plan for Claude Code to generate them later:
+- Which files to read for the assembled system's behavior
+- What end-to-end scenarios to test
 - Which tasks they depend on
 
 ## Sizing Guidance

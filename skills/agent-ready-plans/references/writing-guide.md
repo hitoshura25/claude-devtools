@@ -35,7 +35,7 @@ This is the most important structural rule in the skill. Getting it wrong causes
 
 **Component tasks create files only.** A component task produces one source file and one test file. It does not touch any shared file — no DAG, no registry, no router, no dispatcher. The component is independently testable in complete isolation. Its `test_command` runs only its own test file.
 
-**Wiring tasks modify shared files only.** A wiring task reads the actual produced class names from earlier component tasks and registers them into an orchestrating file. It creates no new source files. It runs only after all components it wires are complete and verified. It is always deferred — generated after component tasks run, by reading actual produced code.
+**Wiring tasks modify shared files only.** A wiring task registers components into an orchestrating file. It creates no new source files. It runs only after all component tasks it depends on are complete and verified. Unlike component tasks, wiring tasks are generated upfront — their test includes an `import_integrity` scenario that validates every class import against actual produced files. See § "Wiring Task Tests" below.
 
 **Why this matters:** If a component task also modifies a shared orchestrating file, then every subsequent component task that runs that orchestrator's test as part of its gate will fail — not because the component is wrong, but because the orchestrator was degraded by an earlier task. A single broken wiring step cascades to all downstream components. Keeping wiring separate means a broken orchestrator cannot cascade-fail components that were individually correct.
 
@@ -43,8 +43,8 @@ This mirrors how engineering teams handle dependencies: engineers build their fe
 
 **In practice:**
 - Task doc has `Files: Create:` only → correct component task
-- Task doc has `Files: Modify:` alongside `Files: Create:` → split it. The component creation is one task; the wiring is a separate deferred task.
-- Task doc has `Files: Modify:` only → correct wiring task (deferred)
+- Task doc has `Files: Modify:` alongside `Files: Create:` → split it. The component creation is one task; the wiring is a separate task sequenced after.
+- Task doc has `Files: Modify:` only → correct wiring task
 
 ---
 
@@ -75,6 +75,40 @@ ruff check services/my-service/tests/test_my_component.py
 - ❌ Any test passes against the stub — the test is vacuous, strengthen it
 
 All three layers must pass before setting `"pre_validated": true` in the manifest. A test file that fails Layer 0 (lint) must not be embedded in the task doc, even if Layers 1 and 2 pass — the small model runs the linter as part of its aider loop and will be stuck on errors it cannot fix in a file it is not supposed to touch.
+
+### Wiring Task Tests
+
+Wiring task tests differ from component task tests in one critical way: they run against actual produced source files, not stubs. The validation gate for a wiring task's test therefore differs:
+
+**Layer 0 (lint): same as component tasks.** The test file must be lint-clean before embedding.
+
+**Layer 1 (mutation gate): skip for wiring tasks.** The wiring task implements orchestrator registration logic, not algorithmic logic — mutation testing is not meaningful here.
+
+**Layer 2 (import integrity check): required.** Before writing the wiring task doc, verify that every component task has completed and its source file exists on disk. Then run the import integrity test against the actual produced files:
+
+```bash
+# Python example — run just the import integrity test:
+cd services/my-service && uv run pytest tests/test_orchestrator.py::test_all_classes_importable -x -q
+# Must pass (all imports resolve) before embedding the test in the wiring task doc
+```
+
+If any import fails at this point, it means a component task drifted from its planned class name or module path — fix that component task first, then re-run.
+
+**The `import_integrity` scenario is mandatory for every wiring task.** It must explicitly import every class the wiring task will use and assert each is not None. This test is what makes it safe to generate wiring tasks before the run: if a model drifts during the run, the import integrity test catches it at the wiring step rather than letting a hallucinated import pass silently.
+
+```python
+# Example — Python wiring task import integrity test
+from plugins.extractors.steps_extractor import StepsExtractor
+from plugins.extractors.blood_glucose_extractor import BloodGlucoseExtractor
+# ... one line per component
+
+def test_all_extractor_classes_importable():
+    assert StepsExtractor is not None
+    assert BloodGlucoseExtractor is not None
+    # ... one assertion per class
+```
+
+Every wiring task doc must also include the instruction: *"Do not import any class not listed here. Do not infer additional classes from file names or directory structure."*
 
 ### Anti-Patterns to Avoid
 
@@ -129,29 +163,29 @@ See `stacks/<language>-<framework>.md` for language-specific stub patterns (e.g.
 
 ## Deferred Tasks
 
-**All wiring tasks are deferred.** Wiring tasks register components into shared orchestrating files (DAGs, routers, registries, dispatchers). They cannot be written upfront because:
-1. Small models may produce slightly different class names, import paths, or module structures than the plan specifies
-2. The wiring must reflect what was actually produced, not what was planned
+Only tasks that depend on the *runtime behavior* of the assembled system are deferred. **This means integration tests only.**
+
+**Wiring tasks are not deferred.** They are generated upfront alongside component tasks because:
+1. Interface contracts define exact class names and import paths
+2. The `import_integrity` test catches any model drift at the wiring gate
+3. The instruction "Do not import any class not listed here" prevents hallucinated imports
+
+Wiring tasks are *sequenced after* their component dependencies in the runner manifest — but their task docs and tests are written before the run starts.
+
+**Integration tests are deferred** because they validate the assembled system's end-to-end behavior, which cannot be fully specified until wiring is complete and verified.
 
 **Other tasks are also deferred when they:**
-- Test functions or classes created by multiple earlier tasks (integration tests, end-to-end tests)
-- Depend on the exact content of files produced by earlier tasks
-
-**No need to defer tasks that:**
-- Only test code within the same task doc (unit tests for a component)
-- Create standalone components with no cross-task interface dependencies
-- Follow a well-defined base type pattern where the interface is fixed upfront
+- Test functions or classes created by multiple earlier tasks (end-to-end tests)
+- Depend on the runtime behavior of the assembled system
 
 **How deferred tasks work:**
 
 1. During initial generation (Step 5), create a manifest entry with `"deferred": true`, `"deferred_reason"`, and `"depends_on"`. Skip creating the task doc file.
-2. The runner pauses at the first deferred task whose `.md` file does not yet exist. This is a generation step, not a failure — the runner is waiting for Claude Code to read the actual produced source files and create the task doc.
-3. Invoke Claude Code to generate the deferred task docs — read actual implementation files, not the plan.
+2. The runner pauses at the first deferred task whose `.md` file does not yet exist. This is a generation step, not a failure — the runner is waiting for Claude Code to read the assembled system and create the task doc.
+3. Invoke Claude Code to generate the deferred task docs.
 4. Resume the runner with `--start N`.
 
-The runner pause is intentional and expected. Deferred task docs cannot be written upfront because the wiring task must enumerate the exact class names and import paths that the small model actually produced — which may differ from the plan. Generating the task doc after all components are complete is what prevents hallucinated imports.
-
-**Example — wiring task manifest entry:**
+**Example — wiring task manifest entry (not deferred):**
 ```json
 {
   "file": "20-task-6.1-wire-extractors-into-dag.md",
@@ -161,19 +195,26 @@ The runner pause is intentional and expected. Deferred task docs cannot be writt
   "files_modified": ["dags/health_connect_ingest.py"],
   "test_command": "cd services/airflow-ingestion && uv run pytest tests/test_dag.py -x -q",
   "estimated_complexity": "moderate",
-  "deferred": true,
-  "deferred_reason": "Must read actual produced class names and import paths from tasks 3.1–5.6. Small models may deviate from planned names.",
+  "deferred": false,
   "depends_on": ["3.1", "3.2", "4.1", "4.2", "5.1", "5.2", "5.3", "5.4", "5.5", "5.6"]
 }
 ```
 
-**When generating a deferred wiring task doc:**
-- Read every source file listed in `depends_on` to get the actual class names and import paths
-- Enumerate each class explicitly in the task doc — list every class name the task must import
-- Include an explicit instruction: *"Do not import any class not listed here. Do not infer additional classes from file names or directory structure."*
-- This prevents the hallucinated-import failure mode where the model adds imports for modules that don't exist
-
-When generating, read the actual source files for imports, class names, and registration patterns. Do not reference the original plan — the implementation is the source of truth.
+**Example — integration test manifest entry (deferred):**
+```json
+{
+  "file": "21-task-7.1-integration-tests.md",
+  "task_id": "7.1",
+  "title": "End-to-End Ingestion Integration Tests",
+  "phase": "Integration Tests",
+  "files_created": ["tests/test_integration.py"],
+  "test_command": "cd services/airflow-ingestion && uv run pytest tests/test_integration.py -x -q",
+  "estimated_complexity": "complex",
+  "deferred": true,
+  "deferred_reason": "Must observe actual assembled orchestrator behavior to write meaningful end-to-end assertions.",
+  "depends_on": ["6.1"]
+}
+```
 
 ---
 
