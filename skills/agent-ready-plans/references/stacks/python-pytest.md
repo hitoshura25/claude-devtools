@@ -321,7 +321,17 @@ def test_schema_initialized_on_construction(tmp_path):
     store.mark_seen(["id-1"])  # must not raise "no such table"
 ```
 
-**SQLite `:memory:` multi-connection trap:** Each `sqlite3.connect(":memory:")` creates a completely independent in-memory database. If the implementation opens a fresh connection per method call, `_init_schema()` creates the table in one DB and `mark_seen()` opens a fresh empty one. Fix: hold a persistent connection for the object's lifetime:
+---
+
+## SQLite Trap Patterns
+
+Two SQLite traps consistently break small model implementations. Document both in every task doc's `## Behavior` section whenever SQLite is used.
+
+### Trap 1 — `:memory:` multi-connection
+
+Each `sqlite3.connect(":memory:")` creates a completely independent in-memory database. If the implementation opens a fresh connection per method call, `_init_schema()` creates the table in one DB and the next method call opens a fresh empty one — `no such table`.
+
+Fix: hold a persistent connection for the object's lifetime:
 
 ```python
 class UUIDStore:
@@ -330,4 +340,32 @@ class UUIDStore:
         self._init_schema()
 ```
 
-Document this constraint in the task doc's Behavior section when `:memory:` is used in tests.
+Task doc Behavior entry: *"Must hold a persistent `self._conn` connection opened in `__init__` — do not open a new connection per method call."*
+
+### Trap 2 — Multi-column row-value constructor in IN clause
+
+SQLite does not support multi-column row-value constructors in `IN` clauses. The following raises `OperationalError: IN(...) element has 1 term - expected 2`:
+
+```python
+# WRONG — SQLite does not support this syntax
+cursor = conn.execute(
+    "SELECT uuid_hex FROM t WHERE (uuid_hex, record_type) IN (?, ?, ?, ?)",
+    [*interleaved_params]
+)
+```
+
+Small models consistently attempt this pattern when filtering on two columns simultaneously. Every reflection tries a variation of the same approach and never escapes. The correct pattern is a single-column `IN` with an `AND` clause for the second filter:
+
+```python
+# CORRECT — single-column IN + AND for the second filter
+placeholders = ','.join('?' * len(uuids))
+query = (
+    f"SELECT uuid_hex FROM seen_uuids "
+    f"WHERE uuid_hex IN ({placeholders}) AND record_type = ?"
+)
+cursor = conn.execute(query, [*uuids, record_type])
+```
+
+Task doc Behavior entry: *"SQLite does not support multi-column IN clauses — use `WHERE col1 IN (?, ...) AND col2 = ?` with params `[*col1_values, col2_value]`."*
+
+Include this note in the task doc whenever a query filters on two or more columns using `IN`.

@@ -52,9 +52,17 @@ This mirrors how engineering teams handle dependencies: engineers build their fe
 
 Claude Code authors tests during Step 3b. The tests must be correct — both logically sound and mechanically robust. Incorrect tests are worse than no tests: the small model passes them trivially while the real behavior goes unvalidated, or gets stuck in a failing loop it can't escape.
 
-### Two-Layer Validation Gate
+### Three-Layer Validation Gate
 
-Every test file must pass both layers before being embedded in a task doc:
+Every test file must pass all three layers before being embedded in a task doc and marked `pre_validated: true` in the manifest.
+
+**Layer 0: Lint gate.** Run the project linter against the test file *before* running any tests. Fix all violations before proceeding. A test file with lint errors handed to the small model is a trap: the model may exhaust all reflections trying to fix lint in a file it's not supposed to edit, rather than writing the implementation. This is especially important for string literals in fixture setup — inline SQL, long argument lists, and schema definitions frequently exceed line-length limits. Break these across multiple lines during authoring so the model never sees a lint error in the starting state.
+
+```bash
+# Python/ruff example — run against the test file directly:
+ruff check services/my-service/tests/test_my_component.py
+# Must return zero errors before proceeding to Layer 1
+```
 
 **Layer 1: Mutation gate.** Run a mutation testing tool against the stub + tests. A surviving mutant means a test that would pass even if that logic were changed — a weak assertion. Strengthen tests until mutation score ≥ 80%. See `tooling.md` § "Mutation Testing" for tool selection by language.
 
@@ -65,6 +73,8 @@ Every test file must pass both layers before being embedded in a task doc:
 - ❌ Type error in test setup code — the test itself has a bug, fix it
 - ❌ Fixture/mock setup error — the test fixture is mis-wired, fix it
 - ❌ Any test passes against the stub — the test is vacuous, strengthen it
+
+All three layers must pass before setting `"pre_validated": true` in the manifest. A test file that fails Layer 0 (lint) must not be embedded in the task doc, even if Layers 1 and 2 pass — the small model runs the linter as part of its aider loop and will be stuck on errors it cannot fix in a file it is not supposed to touch.
 
 ### Anti-Patterns to Avoid
 
@@ -135,9 +145,11 @@ See `stacks/<language>-<framework>.md` for language-specific stub patterns (e.g.
 **How deferred tasks work:**
 
 1. During initial generation (Step 5), create a manifest entry with `"deferred": true`, `"deferred_reason"`, and `"depends_on"`. Skip creating the task doc file.
-2. The runner skips deferred tasks and stops after the last non-deferred task.
+2. The runner pauses at the first deferred task whose `.md` file does not yet exist. This is a generation step, not a failure — the runner is waiting for Claude Code to read the actual produced source files and create the task doc.
 3. Invoke Claude Code to generate the deferred task docs — read actual implementation files, not the plan.
 4. Resume the runner with `--start N`.
+
+The runner pause is intentional and expected. Deferred task docs cannot be written upfront because the wiring task must enumerate the exact class names and import paths that the small model actually produced — which may differ from the plan. Generating the task doc after all components are complete is what prevents hallucinated imports.
 
 **Example — wiring task manifest entry:**
 ```json
@@ -155,7 +167,13 @@ See `stacks/<language>-<framework>.md` for language-specific stub patterns (e.g.
 }
 ```
 
-When generating a deferred task doc, read the actual source files for imports, class names, and registration patterns. Do not reference the original plan — the implementation is the source of truth.
+**When generating a deferred wiring task doc:**
+- Read every source file listed in `depends_on` to get the actual class names and import paths
+- Enumerate each class explicitly in the task doc — list every class name the task must import
+- Include an explicit instruction: *"Do not import any class not listed here. Do not infer additional classes from file names or directory structure."*
+- This prevents the hallucinated-import failure mode where the model adds imports for modules that don't exist
+
+When generating, read the actual source files for imports, class names, and registration patterns. Do not reference the original plan — the implementation is the source of truth.
 
 ---
 
