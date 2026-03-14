@@ -15,24 +15,40 @@ result = self._transform(item)  # item is a single Row, not a list
 
 This applies to any abstract/interface pattern across any language: parsers, handlers, strategies, validators. If the base orchestrates calls to the abstract method, show it. One line prevents the model from assuming the wrong type, wrong cardinality, or a different calling convention.
 
-**Pre-wrap code patterns that will structurally exceed the line-length limit.** When a Behavior section describes a call pattern that will predictably produce long lines — f-string-interpolated keys, multi-argument method chains, xcom/RPC-style calls with inline variable names — provide the multi-line form explicitly. The model copies what it sees. A one-liner in the task doc becomes a one-liner in the code, which then triggers the linter on every reflection loop, consuming the model's entire reflection budget on formatting rather than logic.
+**Wiring task Behavior sections must use code snippets for all callable bodies — no prose.** This is unconditional and requires no length judgement. In a wiring task, every callable body in the Behavior section must be shown as actual code, not described in prose. The model transcribes whatever form it reads. Prose descriptions produce one-liner transcriptions. One-liners in orchestrator callables (XCom pulls, routing keys, message dicts, storage keys) reliably exceed the project line-length limit, triggering a lint spiral that consumes the model's reflection budget. If even one reflection is then lost to a model serving error (e.g. InternalServerError mid-generation), the file can be corrupted, triggering a test-fail → reflect → retry loop that exhausts the context window entirely.
 
-This is especially common in orchestrator/wiring tasks where a shared context object (Airflow XCom, Temporal signals, Celery task results) must be pulled by a computed key:
+The rule is unconditional because length prediction is unreliable: a call that looks short may still exceed the limit when variable names, indentation, and closing punctuation are added. Show the code; let the model copy it.
 
 ```python
-# WRONG — will exceed 88 chars; model copies this as-is
-records = context["task_instance"].xcom_pull(task_ids=f"{extractor.record_type}.extract", key="records")
+# WRONG — prose in wiring task Behavior leads to one-liner transcription:
+# "pulls the zip path from XCom and unzips it to a temp directory"
 
-# CORRECT — show this form in the Behavior section
+# CORRECT — show the exact form for every call in every callable body:
+zip_path = context["task_instance"].xcom_pull(
+    key="zip_path",
+    task_ids="download_zip",
+)
+
 records = context["task_instance"].xcom_pull(
     task_ids=f"{extractor.record_type}.extract",
     key="records",
 )
+
+key = f"raw/airflow/{extractor.record_type}/{logical_date}/{dag_run_id}.avro"
+
+routing_key = f"health.processing.{extractor.record_type}.normal"
+
+message = {
+    "user_id": settings.user_id,
+    "record_type": extractor.record_type,
+    "minio_key": minio_key,
+    "dag_run_id": context["run_id"],
+}
 ```
 
-Apply the same wrapping to any call where string interpolation plus argument names will predictably push the line past the project's limit. If you can see it will be long when you write the Behavior section, write it wrapped. The model will reproduce whatever form you give it.
+This rule applies only to **wiring task Behavior sections**. Component task Behavior sections continue to use interface contracts and behavioral specs without bodies — the model writes the implementation to pass the pre-written tests.
 
-**Interface contracts, not implementation code.** Define class/function names, signatures with type annotations, and behavioral specs. Do not include bodies — the small model writes the implementation to pass the pre-written tests.
+**Interface contracts, not implementation code.** For component tasks: define class/function names, signatures with type annotations, and behavioral specs. Do not include method bodies — the small model writes the implementation to pass the pre-written tests.
 
 **Tests are Claude Code's responsibility.** Claude Code writes complete, verified test code during scaffold (Step 3b). Task docs embed the test file verbatim in the `## Tests` section. The small model's job is to implement the code to pass them — not to write tests.
 
@@ -127,7 +143,7 @@ def test_all_extractor_classes_importable():
 
 Every wiring task doc must also include the instruction: *"Do not import any class not listed here. Do not infer additional classes from file names or directory structure."*
 
-**Pre-wrap all long call patterns in the Behavior section.** Wiring tasks are disproportionately affected by the line-length trap because their Behavior sections describe orchestrator code that is structurally long: computed routing keys, context pulls by interpolated ID, multi-argument registration calls. Every one of these that will exceed the line limit must be shown in wrapped form in the Behavior section — not just mentioned in prose. The model reproduces what it reads. If it reads a one-liner it writes a one-liner; if it reads a wrapped form it writes a wrapped form. Lint failures on the wiring file are the highest-risk failures in the entire task set: a wiring file that fails lint triggers a reflection loop on a large file with a limited reflection budget, and any model serving instability during those reflections (e.g. a repeat-chunk InternalServerError) can corrupt the file in a way that feeds a test-fail → reflect → retry spiral until the context window is exhausted.
+**The Behavior section of every wiring task must use code snippets for all callable bodies — no prose, no exceptions.** See Core Principles § "Wiring task Behavior sections must use code snippets" for the full rationale. The summary: prose → one-liner → lint fires → reflection spiral → context exhaustion if a serving error occurs mid-reflection. The fix is unconditional: write all callable body code as snippets. Do not attempt to predict which lines will be long. Show the code; let the model copy it.
 
 ### Anti-Patterns to Avoid
 
