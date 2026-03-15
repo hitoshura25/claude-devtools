@@ -37,6 +37,43 @@ poetry install
 
 ---
 
+## Ruff Configuration (pyproject.toml)
+
+The canonical ruff config for a new service:
+
+```toml
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+```
+
+**Critical: do NOT add `E501` to `ignore`.** E501 is the line-length rule. Suppressing it
+globally defeats the purpose of the lint gate — the small model will write arbitrarily long
+lines and the linter will never fire. If E501 violations appear in test files or conftest
+during Step 3b, fix the lines (break them, use multi-line strings, extract constants) rather
+than suppressing the rule. The SQL Constants Pattern and the wiring task callable-body
+snippet rules exist precisely to prevent long-line violations at the source. Suppressing
+E501 is never the right fix.
+
+```toml
+# CORRECT
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+# WRONG — suppresses line-length enforcement, defeats lint gate
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+```
+
+If the project already has `ignore = ["E501"]` (e.g. from a previous run where it was
+added as a workaround), remove it before proceeding.
+
+---
+
 ## Lint Wrapper (required for ruff + aider)
 
 Ruff always lints files passed explicitly on the command line — including non-Python files like `requirements.txt`, `Dockerfile`, `.gitkeep` that aider may have edited alongside `.py` files. Ruff reports syntax errors on these that the small model can never fix, causing an infinite retry loop.
@@ -80,6 +117,66 @@ Test it:
 ```
 
 Do NOT use `cd` in `lint_cmd` — aider appends file paths relative to the project root, which break after a directory change. `cd` is safe in `test_cmd` only.
+
+---
+
+## SQL Constants Pattern
+
+**Never inline SQL strings as method-body literals.** SQL strings embedded directly in method bodies are prone to E501 lint violations (SQL reads naturally as a long single line, but Python enforces an 88-char limit). Multi-line string concatenation within a method body is hard to read and still fragile. Small models consistently write SQL as single-line literals; the linter fires; reflections are consumed on formatting rather than logic.
+
+The correct Python idiom is to assign SQL strings to named module-level constants:
+
+```python
+# CORRECT — module-level constant, never fires E501 in method bodies
+_INIT_SCHEMA_SQL = """
+    CREATE TABLE IF NOT EXISTS seen_uuids (
+        uuid_hex TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        seen_at TEXT NOT NULL,
+        PRIMARY KEY (uuid_hex, record_type)
+    )
+"""
+
+_MARK_SEEN_SQL = (
+    "INSERT OR IGNORE INTO seen_uuids "
+    "(uuid_hex, record_type, seen_at) VALUES (?, ?, ?)"
+)
+
+_FILTER_SEEN_SQL_TEMPLATE = (
+    "SELECT uuid_hex FROM seen_uuids "
+    "WHERE uuid_hex IN ({placeholders}) AND record_type = ?"
+)
+```
+
+Method bodies then reference the constant:
+
+```python
+def _init_schema(self) -> None:
+    self._conn.execute(_INIT_SCHEMA_SQL)
+    self._conn.commit()
+
+def mark_seen(self, ids: list[str], record_type: str) -> None:
+    now = datetime.utcnow().isoformat()
+    self._conn.executemany(
+        _MARK_SEEN_SQL,
+        [(id_, record_type, now) for id_ in ids],
+    )
+    self._conn.commit()
+```
+
+**Apply this rule in task doc Behavior sections whenever SQL is used.** Instead of showing the SQL inline in a behavior bullet, show the constant name and its value as a module-level assignment. The small model will place it at module level where the linter never fires.
+
+**Task doc Behavior entry example:**
+```
+- Define module-level SQL constants for all queries (do not inline SQL in method bodies):
+    _MARK_SEEN_SQL = (
+        "INSERT OR IGNORE INTO seen_uuids "
+        "(uuid_hex, record_type, seen_at) VALUES (?, ?, ?)"
+    )
+- Use the constant in mark_seen() — do not write the SQL literal inside the method.
+```
+
+This rule is also why Claude Code must assign SQL to constants during Step 3b test writing — if the test fixture or conftest contains inline SQL, it will fire E501 and block the small model before it can even start.
 
 ---
 
@@ -369,3 +466,5 @@ cursor = conn.execute(query, [*uuids, record_type])
 Task doc Behavior entry: *"SQLite does not support multi-column IN clauses — use `WHERE col1 IN (?, ...) AND col2 = ?` with params `[*col1_values, col2_value]`."*
 
 Include this note in the task doc whenever a query filters on two or more columns using `IN`.
+
+**Note:** the query string above should be assigned to a module-level constant per the SQL Constants Pattern above — do not inline it in the method body.

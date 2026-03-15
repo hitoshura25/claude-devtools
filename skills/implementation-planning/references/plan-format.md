@@ -77,15 +77,15 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 **Depends on:** Tasks X.Y, X.Z, ...
 
-## Phase N+1: Integration Tests *(deferred)*
+## Phase N+1: Integration Tests
 
-### Task N+1.1: [Integration Test Name] *(deferred)*
+### Task N+1.1: [Integration Test Name]
 
-**Deferred:** Generate after wiring task completes — reads actual produced
-orchestrator to derive end-to-end scenarios.
+**Requires services:** [e.g., minio, rabbitmq — live containers needed at runtime]
 
 **What to test:**
-- [Description of integration scenarios]
+- [End-to-end scenario descriptions]
+- [Deduplication/re-run behavior]
 
 **Depends on:** Task N.1
 ```
@@ -279,7 +279,7 @@ Phase 4: Primary Components      (main business logic — create files only, no 
 Phase 5: Secondary Components    (additional component implementations)
 Phase 6: Wiring                  (dedicated tasks — generated upfront, sequenced after components)
 Phase 7: Deployment              (Docker, infra config)
-Phase 8: Integration Tests       (deferred — generated after wiring tasks complete)
+Phase 8: Integration Tests       (service-gated — generated upfront, skipped at runtime if services unavailable)
 ```
 
 **Phase 1 is special:** The project scaffold is created directly by Claude Code — not delegated to a small model.
@@ -295,28 +295,29 @@ A wiring task:
 - Runs the orchestrator test as its `test_command`
 - Is sequenced after all component tasks it depends on
 
-**Phase 8 — Integration Tests — is deferred.** Integration tests validate the assembled system's end-to-end behavior, which cannot be fully specified until wiring is clean and the orchestrator's actual behavior is known. Generate integration test task docs after Phase 6 completes.
+**Phase 8 — Integration Tests — is service-gated, not deferred.** Integration test task docs are written upfront alongside all other tasks, because what they must test (end-to-end data flow, deduplication behavior, service interactions) is fully knowable from the design doc and interface contracts — no runtime discovery is needed. They are **not** deferred. The distinction is in how the runner handles them at execution time: the runner checks whether required services (e.g. MinIO, RabbitMQ, a database) are reachable before executing the task, and skips it with a warning if they are not. When services are available, the task runs automatically in sequence after the wiring phase.
+
+In the manifest, integration test tasks use `"requires_services"` and `"service_check_commands"` — **not** `"deferred": true`. Do not mark integration tests as deferred in either the plan or the manifest.
 
 This structure means a broken wiring task cannot cascade-fail component tasks — components were already verified in isolation. And a broken component is caught at the wiring task's import integrity test, not silently embedded in passing orchestrator logic.
 
-## Deferred Tasks
+## Deferred Tasks vs Service-Gated Tasks
 
-Only tasks that depend on the *runtime behavior* of the assembled system need to be deferred. This means **integration tests only**.
+These are two distinct categories. Confusing them produces incorrect runner behavior.
 
-**Do not defer wiring tasks.** Wiring tasks can be written upfront because:
-1. Interface contracts define exact class names and import paths
-2. The `import_integrity` test scenario catches any model drift at the wiring gate
-3. The instruction "Do not import any class not listed here" prevents hallucinated imports
+**Deferred** (`"deferred": true` in the manifest): The task doc genuinely cannot be written before the run starts, because its content depends on runtime artifacts produced by earlier tasks — actual class names, actual module paths, actual function signatures that only exist after the small model has implemented them. The runner halts when it reaches a deferred task and waits for Claude Code to generate the doc from the real produced code.
 
-**Defer integration tests** (Phase 8) because:
-- They test end-to-end behavior of the assembled system
-- That behavior cannot be fully specified until wiring is complete and verified
-- They may need to observe actual orchestrator behavior to write meaningful assertions
+In practice, **no task category in a well-specified plan should be deferred** once wiring tasks are generated upfront with `import_integrity` tests. Deferred tasks are a fallback for plans where interface contracts are too loosely specified to enumerate exact import paths ahead of time.
 
-Include enough detail in the plan for Claude Code to generate them later:
-- Which files to read for the assembled system's behavior
-- What end-to-end scenarios to test
-- Which tasks they depend on
+**Service-gated** (`"requires_services": [...]` in the manifest, `"deferred": false`): The task doc exists and is complete upfront, but the task's execution requires live external services. The runner checks service health before executing and skips (not halts) if services are unavailable. This is the correct classification for **all integration tests**.
+
+| Condition | Classification |
+|---|---|
+| Task doc content depends on runtime artifacts from earlier tasks | `deferred: true` |
+| Task doc is complete upfront; execution needs live services | `requires_services: [...]`, `deferred: false` |
+| Task runs fully with mocks | Standard task — neither |
+
+**Never mark integration tests as deferred.** Their content (what services to call, what data to seed, what outcomes to assert) is fully derivable from the design doc and interface contracts before any code is written. Marking them deferred causes the runner to halt unnecessarily and requires a manual generation step that adds no value.
 
 ## Sizing Guidance
 

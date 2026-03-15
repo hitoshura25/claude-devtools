@@ -196,59 +196,67 @@ See `stacks/<language>-<framework>.md` for language-specific stub patterns (e.g.
 
 ---
 
-## Deferred Tasks
+## Deferred Tasks vs Service-Gated Tasks
 
-Only tasks that depend on the *runtime behavior* of the assembled system are deferred. **This means integration tests only.**
+These are two distinct categories with different handling. Conflating them causes unnecessary pauses in the runner.
 
-**Wiring tasks are not deferred.** They are generated upfront alongside component tasks because:
-1. Interface contracts define exact class names and import paths
-2. The `import_integrity` test catches any model drift at the wiring gate
-3. The instruction "Do not import any class not listed here" prevents hallucinated imports
+### Deferred Tasks — task doc cannot be written upfront
 
-Wiring tasks are *sequenced after* their component dependencies in the runner manifest — but their task docs and tests are written before the run starts.
+A task is **deferred** only when its task doc genuinely cannot be written before the run starts — because its content depends on runtime artifacts that don't yet exist (actual class names, actual module paths, actual function signatures produced by earlier tasks).
 
-**Integration tests are deferred** because they validate the assembled system's end-to-end behavior, which cannot be fully specified until wiring is complete and verified.
+**The only category that qualifies is the wiring task** when there is any uncertainty about exact class names or import paths from component tasks. Wiring tasks are now generated upfront with `deferred: false` because interface contracts define exact class names and the `import_integrity` test catches any drift. If a project's interface contracts are less rigidly specified, a wiring task may still be deferred.
 
-**Other tasks are also deferred when they:**
-- Test functions or classes created by multiple earlier tasks (end-to-end tests)
-- Depend on the runtime behavior of the assembled system
+When a task is deferred, the runner halts and waits for Claude Code to generate the task doc from actual produced code before continuing.
 
-**How deferred tasks work:**
+### Service-Gated Tasks — task doc can be written upfront, but execution needs live services
 
-1. During initial generation (Step 5), create a manifest entry with `"deferred": true`, `"deferred_reason"`, and `"depends_on"`. Skip creating the task doc file.
-2. The runner pauses at the first deferred task whose `.md` file does not yet exist. This is a generation step, not a failure — the runner is waiting for Claude Code to read the assembled system and create the task doc.
-3. Invoke Claude Code to generate the deferred task docs.
-4. Resume the runner with `--start N`.
+An integration test task is **not deferred** — it can be fully written before the run. The interface contracts and behavioral requirements are known from the design doc. The test code makes real calls to real services (a database, a message broker, an object store) and validates end-to-end behavior.
 
-**Example — wiring task manifest entry (not deferred):**
+Mark these with `"requires_services": true` in the manifest and list the required services. The runner will:
+1. Check whether the required services are reachable before executing the task
+2. Skip the task with a warning if any service is unavailable (not halt the run)
+3. Report skipped tasks in the final summary alongside succeeded/degraded counts
+
+This means integration tests are generated upfront alongside component and wiring tasks, and run automatically at the end of the sequence when services are available.
+
+**Manifest entry — integration test (service-gated, not deferred):**
 ```json
 {
-  "file": "20-task-6.1-wire-extractors-into-dag.md",
-  "task_id": "6.1",
-  "title": "Wire All Extractors into DAG",
-  "phase": "Wiring",
-  "files_modified": ["dags/health_connect_ingest.py"],
-  "test_command": "cd services/airflow-ingestion && uv run pytest tests/test_dag.py -x -q",
-  "estimated_complexity": "moderate",
+  "file": "20-task-7.1-integration-tests.md",
+  "task_id": "7.1",
+  "title": "End-to-End Ingestion Integration Tests",
+  "phase": "Integration Testing",
+  "files_created": ["services/my-service/tests/test_integration.py"],
+  "files_modified": [],
+  "test_command": "cd services/my-service && uv run pytest tests/test_integration.py -x -q",
+  "estimated_complexity": "complex",
   "deferred": false,
-  "depends_on": ["3.1", "3.2", "4.1", "4.2", "5.1", "5.2", "5.3", "5.4", "5.5", "5.6"]
+  "requires_services": ["minio", "rabbitmq"],
+  "service_check_commands": {
+    "minio": "curl -sf http://localhost:9000/minio/health/live",
+    "rabbitmq": "curl -sf http://localhost:15672/api/overview -u guest:guest"
+  },
+  "depends_on": ["6.1"]
 }
 ```
 
-**Example — integration test manifest entry (deferred):**
-```json
-{
-  "file": "21-task-7.1-integration-tests.md",
-  "task_id": "7.1",
-  "title": "End-to-End Ingestion Integration Tests",
-  "phase": "Integration Tests",
-  "files_created": ["tests/test_integration.py"],
-  "test_command": "cd services/airflow-ingestion && uv run pytest tests/test_integration.py -x -q",
-  "estimated_complexity": "complex",
-  "deferred": true,
-  "deferred_reason": "Must observe actual assembled orchestrator behavior to write meaningful end-to-end assertions.",
-  "depends_on": ["6.1"]
-}
+**Rule for deciding deferred vs service-gated:**
+
+| Condition | Classification |
+|-----------|---------------|
+| Task doc content depends on actual runtime artifacts from earlier tasks | `deferred: true` |
+| Task doc can be fully written now, but needs live services to execute | `requires_services: [...]`, `deferred: false` |
+| Task can run in isolation with mocks | Neither — standard task |
+
+**Example — integration test Behavior section (service-gated):**
+The Behavior section specifies what the test validates end-to-end. It can reference real service endpoints and expected outcomes because these are known from the design doc, not inferred from runtime artifacts:
+
+```
+- Connect to MinIO at settings.minio_endpoint and verify the bucket exists
+- Connect to RabbitMQ at settings.rabbitmq_host and verify the queue exists
+- Trigger the full ingestion pipeline with a test fixture file
+- Assert the expected Avro record count was written to MinIO
+- Assert the expected message count was published to RabbitMQ
 ```
 
 ---

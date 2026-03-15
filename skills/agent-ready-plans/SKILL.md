@@ -128,7 +128,12 @@ Key principles for task docs:
 - **Environment constraints.** State what's mocked, what's not installed, what can't make real connections.
 - **One commit per task** with a conventional commit message.
 
-**Deferred tasks:** Wiring tasks (which modify shared orchestrating files) and integration tests are always deferred — generated after component tasks complete by reading actual produced code. Mark these as `"deferred": true` in the manifest and do not generate their task doc files yet. See `references/writing-guide.md` for guidance.
+**Deferred tasks vs service-gated tasks:** These are distinct categories — do not conflate them.
+
+- A task is `"deferred": true` only when its doc genuinely cannot be written upfront, because its content depends on runtime artifacts from earlier tasks (e.g. actual class names, actual module paths produced by the small model). Deferred tasks cause the runner to halt and wait for Claude Code to generate the doc from actual produced code.
+- A task uses `"requires_services": [...]` when its doc can be fully written upfront but its execution requires live external services (databases, message brokers, object stores). The runner skips these tasks (with a warning) when services are unavailable, and runs them automatically when services are reachable. Integration tests belong in this category.
+
+See `references/writing-guide.md` § "Deferred Tasks vs Service-Gated Tasks" for full guidance and manifest examples.
 
 Read `references/writing-guide.md` for deeper guidance on writing style, splitting large tasks, complexity ratings, and deferred task identification.
 
@@ -173,8 +178,7 @@ Create `00-manifest.json` with task metadata and a `tooling` section:
                           "services/my-service/tests/test_dag.py"],
       "test_command": "cd services/my-service && uv run pytest tests/test_dag.py -x -q",
       "estimated_complexity": "moderate",
-      "deferred": true,
-      "deferred_reason": "Reads actual class names and import paths from all component tasks. Must use real implementations, not planned ones.",
+      "deferred": false,
       "depends_on": ["2.1", "2.2", "3.1", "4.1", "4.2", "5.1"]
     },
     {
@@ -186,8 +190,12 @@ Create `00-manifest.json` with task metadata and a `tooling` section:
       "files_modified": [],
       "test_command": "cd services/my-service && uv run pytest tests/test_integration.py -x -q",
       "estimated_complexity": "complex",
-      "deferred": true,
-      "deferred_reason": "Tests real function signatures from all implementation tasks.",
+      "deferred": false,
+      "requires_services": ["minio", "rabbitmq"],
+      "service_check_commands": {
+        "minio": "curl -sf http://localhost:9000/minio/health/live",
+        "rabbitmq": "curl -sf http://localhost:15672/api/overview -u guest:guest"
+      },
       "depends_on": ["6.1"]
     }
   ]
@@ -206,7 +214,7 @@ After copying, make exactly two targeted edits if needed:
 
 ### 8. Present Results
 
-Summarize what was generated: scaffold created, N task files + M deferred, manifest, runner. Include the phase breakdown and the commands to run.
+Summarize what was generated: scaffold created, N task files + M service-gated, manifest, runner. Include the phase breakdown and the commands to run.
 
 ## Execution Notes
 
@@ -219,6 +227,6 @@ Generate task files sequentially in the main session. Write each file to disk be
 | `task-template.md` | Step 5 — complete template with all sections |
 | `references/tooling.md` | Steps 2, 3, 3b — tooling discovery, fixture criteria, mutation gate |
 | `references/stacks/<language>-<framework>.md` | Steps 2, 3, 3b — language-specific install commands, lint wrapper, fixture examples, stub patterns, mutation tool |
-| `references/writing-guide.md` | Steps 3b, 5 — test correctness rules, stub design, task scope rules, deferred task guidance |
+| `references/writing-guide.md` | Steps 3b, 5 — test correctness rules, stub design, task scope rules, deferred/service-gated task guidance |
 | `scripts/lint-ruff-wrapper.sh` | Step 3, Python/ruff projects — copy into tasks folder, update `RUFF_BIN` |
 | `scripts/run-tasks-template.sh` | Step 7 — copy verbatim, make two targeted edits |

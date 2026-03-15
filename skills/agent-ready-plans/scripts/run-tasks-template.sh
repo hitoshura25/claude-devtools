@@ -88,6 +88,50 @@ is_deferred() {
   echo "$DEFERRED_TASKS" | grep -qF "$basename"
 }
 
+# ── Helper: check if required services are reachable ──────────
+# Returns 0 (true) if all services pass their check commands.
+# Returns 1 (false) and prints which services are unavailable otherwise.
+check_services() {
+  local basename="$1"
+  local all_ok=true
+
+  # Extract service check commands from manifest for this task
+  SERVICES_JSON=$(python3 -c "
+import json, sys
+m = json.load(open('$MANIFEST'))
+task = next((t for t in m.get('tasks', []) if t.get('file') == '$basename'), None)
+if task is None or not task.get('requires_services'):
+    print('{}')
+    sys.exit(0)
+checks = task.get('service_check_commands', {})
+print(json.dumps(checks))
+" 2>/dev/null || echo "{}")
+
+  if [[ "$SERVICES_JSON" == "{}" ]]; then
+    return 0
+  fi
+
+  # Run each check command
+  while IFS= read -r line; do
+    SERVICE=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(k+'|'+v) for k,v in d.items()]" 2>/dev/null || echo "")
+    break
+  done <<< "$SERVICES_JSON"
+
+  python3 -c "
+import json, subprocess, sys
+checks = json.loads('$SERVICES_JSON')
+failed = []
+for svc, cmd in checks.items():
+    result = subprocess.run(cmd, shell=True, capture_output=True)
+    if result.returncode != 0:
+        failed.append(svc)
+if failed:
+    print('UNAVAILABLE: ' + ', '.join(failed))
+    sys.exit(1)
+" 2>/dev/null
+  return $?
+}
+
 # ── Run Tasks ──────────────────────────────────────────────────
 cd "$PROJECT_ROOT"
 
@@ -121,6 +165,7 @@ echo ""
 
 SUCCEEDED=0
 DEGRADED=0
+SKIPPED_SERVICES=0
 DEFERRED_HIT=false
 
 for TASK_FILE in "${TASK_FILES[@]}"; do
@@ -181,6 +226,49 @@ print('true' if task.get('pre_validated', False) else 'false')
     echo "  Paused before $((TOTAL - SUCCEEDED - DEGRADED)) deferred task(s)"
     echo "═══════════════════════════════════════════════"
     exit 0
+  fi
+
+  # ── Check if required services are available ───────────────
+  # Service-gated tasks are NOT deferred — their docs exist upfront.
+  # If required services are unavailable, skip the task (don't halt the run).
+  REQUIRES_SERVICES=$(python3 -c "
+import json, sys
+m = json.load(open('$MANIFEST'))
+task = next((t for t in m.get('tasks', []) if t.get('file') == '$BASENAME'), None)
+if task is None or not task.get('requires_services'):
+    print('false')
+else:
+    print(','.join(task['requires_services']))
+" 2>/dev/null || echo "false")
+
+  if [[ "$REQUIRES_SERVICES" != "false" ]]; then
+    SERVICE_CHECK_OUTPUT=$(python3 -c "
+import json, subprocess
+m = json.load(open('$MANIFEST'))
+task = next((t for t in m.get('tasks', []) if t.get('file') == '$BASENAME'), None)
+checks = task.get('service_check_commands', {})
+failed = []
+for svc, cmd in checks.items():
+    result = subprocess.run(cmd, shell=True, capture_output=True)
+    if result.returncode != 0:
+        failed.append(svc)
+if failed:
+    print('UNAVAILABLE: ' + ', '.join(failed))
+else:
+    print('OK')
+" 2>/dev/null || echo "CHECK_ERROR")
+
+    if [[ "$SERVICE_CHECK_OUTPUT" != "OK" ]]; then
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "⏭  Skipped (services unavailable): $BASENAME"
+      echo "   Requires: $REQUIRES_SERVICES"
+      echo "   Status: $SERVICE_CHECK_OUTPUT"
+      echo "   To run: start required services, then: ./run-tasks.sh --start $TASK_NUM"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      SKIPPED_SERVICES=$((SKIPPED_SERVICES + 1))
+      continue
+    fi
   fi
 
   echo ""
@@ -352,8 +440,12 @@ fi
 
 echo ""
 echo "═══════════════════════════════════════════════"
-if [[ $DEGRADED -gt 0 ]]; then
-  echo "  $SUCCEEDED tasks completed ($DEGRADED degraded — review these manually)"
+if [[ $DEGRADED -gt 0 || $SKIPPED_SERVICES -gt 0 ]]; then
+  MSG="  $SUCCEEDED tasks completed"
+  [[ $DEGRADED -gt 0 ]] && MSG="$MSG, $DEGRADED degraded (review these manually)"
+  [[ $SKIPPED_SERVICES -gt 0 ]] && MSG="$MSG, $SKIPPED_SERVICES skipped (services unavailable)"
+  echo "$MSG"
+  [[ $SKIPPED_SERVICES -gt 0 ]] && echo "  Start required services and re-run skipped tasks with --start N"
 else
   echo "  All $SUCCEEDED tasks completed successfully!"
 fi
