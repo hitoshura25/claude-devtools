@@ -323,9 +323,15 @@ def mock_pika_connection():
     Usage:
         def test_publish(mock_pika_connection):
             call_args = mock_pika_connection["channel"].basic_publish.call_args
+
+    NOTE: mock_conn.is_closed is explicitly set to False.
+    See "Pika Connection Lifecycle Trap" below for why this matters.
     """
     with patch("plugins.writers.rabbitmq_publisher.pika.BlockingConnection") as mock_conn_cls:
         mock_conn = MagicMock()
+        mock_conn.is_closed = False  # MagicMock() is truthy; set explicitly so
+                                     # `not conn.is_closed` evaluates correctly if
+                                     # the implementation guards close() with it
         mock_channel = MagicMock()
         mock_conn_cls.return_value = mock_conn
         mock_conn.channel.return_value = mock_channel
@@ -336,6 +342,51 @@ def mock_pika_connection():
             "channel": mock_channel,
         }
 ```
+
+#### Pika Connection Lifecycle Trap
+
+Small models (Qwen in particular) write a defensive `is_closed` guard when closing a pika
+connection:
+
+```python
+# WRONG — is_closed on a MagicMock is a MagicMock (truthy)
+# so `not connection.is_closed` evaluates to False and close() is never called
+finally:
+    if connection and not connection.is_closed:
+        connection.close()
+```
+
+When the test asserts `mock_pika_connection["connection"].close.assert_called()`, it fails
+because `close()` was never invoked. The model exhausts all reflections without finding the
+root cause because the logic looks correct — it simply doesn't account for how MagicMock
+attributes behave.
+
+**The fix in the fixture** (already applied above): set `mock_conn.is_closed = False`
+explicitly. This makes the guard evaluate correctly even if the model writes it, so tests
+pass regardless of whether the model uses the guard or not.
+
+**The fix in task docs**: the Behavior section for any RabbitMQ publisher must show the
+`finally` block as a code snippet and use the unconditional form — do not guard with
+`is_closed`:
+
+```python
+# CORRECT — unconditional close; works with both real pika and mock
+finally:
+    if connection is not None:
+        connection.close()
+```
+
+Task doc Behavior entry:
+```
+- Close the connection in a `finally` block using:
+      finally:
+          if connection is not None:
+              connection.close()
+  Do NOT guard with `connection.is_closed` — this attribute is truthy on MagicMock
+  and will prevent close() from being called in tests.
+```
+
+---
 
 ### Positional Argument Trap — fastavro
 
