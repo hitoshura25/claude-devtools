@@ -45,11 +45,13 @@ Read `references/plan-format.md` for the complete plan structure, task template,
 
 **Complete wiring.** Every component that gets created must also be wired into whatever consumes it — in the same task or an explicit later task. Read `references/wiring-completeness.md` for the detailed checklist.
 
+**Deployment tasks when the plan includes containerisation.** If the service will be packaged as a Docker container, include a Deployment phase (Phase 7) after wiring. Each deployment task specifies the Dockerfile, a production compose file, and a self-contained test compose file. The test compose bundles all dependencies so the smoke test requires only Docker — no shared infrastructure stack. See `references/plan-format.md` § "Phasing Guidelines" for the deployment task template.
+
 **Exact file paths.** Always specify the full path from project root. Never "create a config file" — always "create `services/airflow-ingestion/config/settings.py`".
 
 **Scaffold as a separate concern.** Phase 1 (project scaffold) is not a task for the small model. List what the scaffold contains in the plan — the agent-ready-plans skill creates these files directly via Claude Code before delegating tasks to the small model.
 
-**Flag deferred tasks.** Integration tests that depend on exact interfaces from multiple tasks should be marked as deferred. Their precise signatures can only be known after the implementation tasks have run.
+**Service-gated tasks, not deferred.** Integration tests that need live services (MinIO, RabbitMQ, a database) should be marked with `Requires services:` in the plan. The runner will fail the run if those services aren't available — it does not skip. This means developers must start required services before running the full task suite, but it also means every completed run is a complete, verified result.
 
 Save to `docs/plans/YYYY-MM-DD-<feature-name>-implementation.md`.
 
@@ -62,7 +64,8 @@ Before handing off, walk through the wiring completeness checklist in `reference
 - Every file created in the plan is consumed, imported, or registered somewhere
 - Every registry, factory, router, or dispatcher gets updated when new entries are added in later phases
 - Cross-phase dependencies are explicit (not implied by task ordering)
-- Integration tests are flagged as deferred
+- Integration tests use `Requires services:` — not marked as deferred
+- Deployment tasks specify both a production compose and a self-contained test compose
 - Every task's interface contract includes type hints on all public methods
 - Every task's test scenarios are specific enough to verify the behavioral specs
 
@@ -80,7 +83,8 @@ Phase breakdown:
   Phase 1: Project Scaffolding    — Claude Code creates directly
   Phase 2: Core Components        — 4 tasks (spec-based)
   ...
-  Phase N: Integration Tests      — 2 tasks (deferred)
+  Phase 7: Deployment             — 1 task (Docker smoke test)
+  Phase 8: Integration Tests      — 2 tasks (service-gated, hard-fail if unavailable)
 
 Ready to decompose into agent-ready task files now, or would you
 prefer to review the plan first and decompose later?
@@ -100,5 +104,5 @@ If the user wants to proceed immediately, use `devtools:agent-ready-plans` with 
 
 | Resource | When to read |
 |----------|-------------|
-| `references/plan-format.md` | When writing the implementation plan (Step 2) — complete structure, task template, formatting |
+| `references/plan-format.md` | When writing the implementation plan (Step 2) — complete structure, task template, formatting, phasing guidelines |
 | `references/wiring-completeness.md` | When writing cross-phase tasks (Step 2) and validating the plan (Step 3) — checklist for registration gaps |

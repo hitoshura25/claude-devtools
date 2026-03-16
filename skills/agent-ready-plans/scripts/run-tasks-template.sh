@@ -4,7 +4,8 @@
 #
 # Prerequisites:
 #   - aider installed (pip install aider-chat)
-#   - LMStudio running with model loaded
+#   - LMStudio running with model loaded (for local models)
+#   - Docker installed and daemon running (required for infrastructure tasks)
 #   - Git repo clean (no uncommitted changes)
 #
 # Aider flag reference (from https://aider.chat/docs/config/options.html):
@@ -43,33 +44,24 @@ MANIFEST="$TASKS_DIR/00-manifest.json"
 LOG_FILE="$TASKS_DIR/run-$(date +%Y%m%d-%H%M%S).log"
 DEFAULT_MODEL="lm_studio/qwen/qwen3-coder-30b"
 
-# Read tooling config from manifest
-# TEST_CMD is the global suite — used only for the final full-suite check at the end.
-# Each task uses its own per-task test_command from the manifest during execution.
+# Read tooling config from manifest.
+# GLOBAL_LINT_CMD and TEST_CMD are defaults used when a task doesn't specify
+# its own lint_cmd or test_command. TEST_CMD is also used for the final
+# full-suite check at the end of the run.
 if [[ -f "$MANIFEST" ]]; then
-  LINT_CMD=$(python3 -c "import json; print(json.load(open('$MANIFEST')).get('tooling',{}).get('lint_cmd',''))" 2>/dev/null || echo "")
+  GLOBAL_LINT_CMD=$(python3 -c "import json; print(json.load(open('$MANIFEST')).get('tooling',{}).get('lint_cmd',''))" 2>/dev/null || echo "")
   TEST_CMD=$(python3 -c "import json; print(json.load(open('$MANIFEST')).get('tooling',{}).get('test_cmd',''))" 2>/dev/null || echo "")
 else
   echo "⚠  No manifest found at $MANIFEST — lint/test auto-validation disabled"
-  LINT_CMD=""
+  GLOBAL_LINT_CMD=""
   TEST_CMD=""
-fi
-
-# Read deferred task list from manifest
-DEFERRED_TASKS=""
-if [[ -f "$MANIFEST" ]]; then
-  DEFERRED_TASKS=$(python3 -c "
-import json
-m = json.load(open('$MANIFEST'))
-deferred = [t['file'] for t in m.get('tasks', []) if t.get('deferred', False)]
-print('\n'.join(deferred))
-" 2>/dev/null || echo "")
 fi
 
 # ── Parse Arguments ────────────────────────────────────────────
 START_TASK=1
 DRY_RUN=false
 MODEL="${DEFAULT_MODEL}"
+LINT_CMD="${GLOBAL_LINT_CMD}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -82,20 +74,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Helper: check if a task file is deferred ───────────────────
-is_deferred() {
+# ── Helper: check required services are reachable ─────────────
+# Required services are a hard requirement — if any are unavailable the run
+# exits immediately. There is no skip-and-continue for service dependencies:
+# a run that skips required services cannot be considered a valid result.
+check_required_services() {
   local basename="$1"
-  echo "$DEFERRED_TASKS" | grep -qF "$basename"
-}
 
-# ── Helper: check if required services are reachable ──────────
-# Returns 0 (true) if all services pass their check commands.
-# Returns 1 (false) and prints which services are unavailable otherwise.
-check_services() {
-  local basename="$1"
-  local all_ok=true
-
-  # Extract service check commands from manifest for this task
   SERVICES_JSON=$(python3 -c "
 import json, sys
 m = json.load(open('$MANIFEST'))
@@ -110,12 +95,6 @@ print(json.dumps(checks))
   if [[ "$SERVICES_JSON" == "{}" ]]; then
     return 0
   fi
-
-  # Run each check command
-  while IFS= read -r line; do
-    SERVICE=$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(k+'|'+v) for k,v in d.items()]" 2>/dev/null || echo "")
-    break
-  done <<< "$SERVICES_JSON"
 
   python3 -c "
 import json, subprocess, sys
@@ -137,36 +116,29 @@ cd "$PROJECT_ROOT"
 
 TASK_FILES=($(ls "$TASKS_DIR"/[0-9][0-9]-task-*.md 2>/dev/null | sort))
 TOTAL=${#TASK_FILES[@]}
-
-# Count deferred tasks from manifest (includes tasks without .md files yet)
-DEFERRED_COUNT=$(echo "$DEFERRED_TASKS" | grep -c '.' || echo 0)
-# Count task .md files that actually exist
 EXISTING_COUNT=${#TASK_FILES[@]}
 
-if [[ $EXISTING_COUNT -eq 0 && $DEFERRED_COUNT -eq 0 ]]; then
+if [[ $EXISTING_COUNT -eq 0 ]]; then
   echo "❌  No task files found in $TASKS_DIR"
   exit 1
 fi
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║  Task Runner — $EXISTING_COUNT task files + $DEFERRED_COUNT deferred"
+echo "║  Task Runner — $EXISTING_COUNT task files"
 echo "║  Model: $MODEL"
 echo "║  Starting from task: $START_TASK"
 echo "║  Log: $LOG_FILE"
 if [[ -n "$LINT_CMD" ]]; then
-  echo "║  Lint: $LINT_CMD (auto-lint is ON by default)"
+  echo "║  Default lint: $LINT_CMD"
 fi
 if [[ -n "$TEST_CMD" ]]; then
-  echo "║  Test: per-task test_command from manifest (auto-test ON)"
-  echo "║  Final check: $TEST_CMD"
+  echo "║  Final suite check: $TEST_CMD"
 fi
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
 SUCCEEDED=0
 DEGRADED=0
-SKIPPED_SERVICES=0
-DEFERRED_HIT=false
 
 for TASK_FILE in "${TASK_FILES[@]}"; do
   BASENAME=$(basename "$TASK_FILE")
@@ -203,34 +175,10 @@ print('true' if task.get('pre_validated', False) else 'false')
     fi
   fi
 
-  # ── Check if this is a deferred task ───────────────────────
-  if is_deferred "$BASENAME"; then
-    DEFERRED_HIT=true
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "⏸  Deferred: $BASENAME ($TASK_NUM/$TOTAL)"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo "   This task depends on interfaces produced by earlier tasks."
-    echo "   Its task doc must be generated from the actual code."
-    echo ""
-    echo "   To continue:"
-    echo "   1. Generate deferred task docs using Claude Code:"
-    echo "      Read the manifest's deferred entries and the actual source files,"
-    echo "      then create the .md task doc with real signatures and imports."
-    echo "   2. Resume the runner:"
-    echo "      ./run-tasks.sh --start $TASK_NUM"
-    echo ""
-    echo "═══════════════════════════════════════════════"
-    echo "  Implementation phase complete: $SUCCEEDED tasks succeeded, $DEGRADED degraded"
-    echo "  Paused before $((TOTAL - SUCCEEDED - DEGRADED)) deferred task(s)"
-    echo "═══════════════════════════════════════════════"
-    exit 0
-  fi
-
-  # ── Check if required services are available ───────────────
-  # Service-gated tasks are NOT deferred — their docs exist upfront.
-  # If required services are unavailable, skip the task (don't halt the run).
+  # ── Check required services — hard fail if unavailable ─────
+  # Required services are not optional. If they're not running, the run stops
+  # here so the developer can start them and resume with --start N.
+  # This ensures every run produces a complete, valid result.
   REQUIRES_SERVICES=$(python3 -c "
 import json, sys
 m = json.load(open('$MANIFEST'))
@@ -261,13 +209,14 @@ else:
     if [[ "$SERVICE_CHECK_OUTPUT" != "OK" ]]; then
       echo ""
       echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "⏭  Skipped (services unavailable): $BASENAME"
+      echo "❌  Required services unavailable: $BASENAME"
       echo "   Requires: $REQUIRES_SERVICES"
-      echo "   Status: $SERVICE_CHECK_OUTPUT"
-      echo "   To run: start required services, then: ./run-tasks.sh --start $TASK_NUM"
+      echo "   Status:   $SERVICE_CHECK_OUTPUT"
+      echo ""
+      echo "   Start the required services, then resume with:"
+      echo "   ./run-tasks.sh --start $TASK_NUM"
       echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      SKIPPED_SERVICES=$((SKIPPED_SERVICES + 1))
-      continue
+      exit 1
     fi
   fi
 
@@ -281,28 +230,47 @@ else:
     continue
   fi
 
-  # ── Look up per-task test command from manifest ─────────
-  # Each task has its own test_command scoped to its own test file.
-  # This prevents aider from running the global test suite during a task's
-  # retry loop — which would cause cascade failures when future test files
-  # (e.g. test_dag.py) exist but aren't passing yet.
+  # ── Per-task lint command ──────────────────────────────────
+  # Infrastructure tasks (Dockerfile, compose) use a different linter than
+  # Python tasks. If the manifest specifies a lint_cmd for this task, use it;
+  # otherwise fall back to the global lint command from the tooling block.
+  TASK_LINT_CMD=$(python3 -c "
+import json, sys
+m = json.load(open('$MANIFEST'))
+task = next((t for t in m.get('tasks', []) if t.get('file') == '$BASENAME'), None)
+if task is None:
+    print('')
+else:
+    print(task.get('lint_cmd', '') or '')
+" 2>/dev/null || echo "")
+
+  # Use task-level lint_cmd if set, otherwise fall back to global
+  EFFECTIVE_LINT_CMD="${TASK_LINT_CMD:-$LINT_CMD}"
+  if [[ -z "$EFFECTIVE_LINT_CMD" && -n "$LINT_CMD" ]]; then
+    EFFECTIVE_LINT_CMD="$LINT_CMD"
+  fi
+
+  # ── Per-task test command ──────────────────────────────────
+  # Each task has its own test_command scoped to its own test or smoke test.
+  # This prevents aider from running the global suite during a task's retry
+  # loop — which would cascade-fail if earlier tasks have failing tests.
+  #
+  # If test_command is absent or null in the manifest, this task has no test
+  # gate. The runner does NOT fall back to the global suite — the global suite
+  # is only for the final full-stack check at the end of the run.
   TASK_TEST_CMD=$(python3 -c "
 import json, sys
 m = json.load(open('$MANIFEST'))
 task = next((t for t in m.get('tasks', []) if t.get('file') == '$BASENAME'), None)
-if task is None or not task.get('test_command', '').strip():
+if task is None:
     print('')
 else:
-    print(task['test_command'])
+    # Treat both null and empty string as 'no test command'
+    cmd = task.get('test_command')
+    print(cmd if cmd else '')
 " 2>/dev/null || echo "")
 
-  # Fall back to global TEST_CMD if no per-task command is set
-  if [[ -z "$TASK_TEST_CMD" && -n "$TEST_CMD" ]]; then
-    TASK_TEST_CMD="$TEST_CMD"
-    echo "   ⚠  No per-task test_command in manifest — falling back to global test command"
-  fi
-
-  # Core aider args
+  # ── Build aider arguments ─────────────────────────────────
   AIDER_ARGS=(
     --model "$MODEL"
     --no-show-model-warnings
@@ -312,14 +280,17 @@ else:
     --yes-always
   )
 
-  # Lint: aider appends edited filenames to lint_cmd, so it must work from project root.
-  # Do NOT use 'cd' in lint_cmd — the appended paths will break after the cd.
-  if [[ -n "$LINT_CMD" ]]; then
-    AIDER_ARGS+=(--lint-cmd "$LINT_CMD" --auto-lint)
+  # Lint: aider appends edited filenames to lint_cmd, so it must work from
+  # project root. Do NOT use 'cd' in lint_cmd.
+  if [[ -n "$EFFECTIVE_LINT_CMD" ]]; then
+    AIDER_ARGS+=(--lint-cmd "$EFFECTIVE_LINT_CMD" --auto-lint)
+    if [[ -n "$TASK_LINT_CMD" && "$TASK_LINT_CMD" != "$LINT_CMD" ]]; then
+      echo "   Using per-task lint: $TASK_LINT_CMD"
+    fi
   fi
 
-  # Test: use per-task test_command so aider only sees this task's tests.
-  # The global TEST_CMD is reserved for the final full-suite check after all tasks complete.
+  # Test: use per-task test_command if set.
+  # No fallback to global — missing test_command means lint-only for this task.
   if [[ -n "$TASK_TEST_CMD" ]]; then
     AIDER_ARGS+=(--test-cmd "$TASK_TEST_CMD" --auto-test)
   fi
@@ -347,10 +318,9 @@ else:
   fi
 
   # ── Independent test verification ────────────────────────
-  # Don't rely solely on aider's exit code — run tests independently
-  # to catch failures aider may have given up on (reflection exhaustion
-  # exits 0, not non-zero).
-  # Use per-task test command, not the global suite.
+  # Run tests independently to catch failures aider may have given up on
+  # (reflection exhaustion exits 0, not non-zero).
+  # Only run if this task has a test command — no global fallback.
   if [[ -n "$TASK_TEST_CMD" ]]; then
     echo "   Verifying tests independently..."
     set +e
@@ -393,33 +363,10 @@ else:
   SUCCEEDED=$((SUCCEEDED + 1))
 done
 
-# ── Check for deferred tasks that don't have .md files yet ───
-if [[ -n "$DEFERRED_TASKS" && "$DEFERRED_HIT" != true ]]; then
-  MISSING_DEFERRED=""
-  while IFS= read -r deferred_file; do
-    [[ -z "$deferred_file" ]] && continue
-    if [[ ! -f "$TASKS_DIR/$deferred_file" ]]; then
-      MISSING_DEFERRED="$MISSING_DEFERRED  $deferred_file\n"
-    fi
-  done <<< "$DEFERRED_TASKS"
-
-  if [[ -n "$MISSING_DEFERRED" ]]; then
-    echo ""
-    echo "═══════════════════════════════════════════════"
-    echo "  Implementation phase complete: $SUCCEEDED tasks succeeded, $DEGRADED degraded"
-    echo ""
-    echo "  Deferred task docs not yet generated:"
-    echo -e "$MISSING_DEFERRED"
-    echo "  Generate them with Claude Code (read actual source files),"
-    echo "  then re-run to execute them."
-    echo "═══════════════════════════════════════════════"
-    exit 0
-  fi
-fi
-
 # ── Final full-suite check ────────────────────────────────────
-# Now that all tasks are done, run the global test suite once as a
-# sanity check that nothing broke across task boundaries.
+# Now that all tasks are done, run the global test suite once as a sanity
+# check that nothing broke across task boundaries. This runs the service's
+# unit tests only (not integration tests, which have their own task).
 if [[ -n "$TEST_CMD" && "$DRY_RUN" != true ]]; then
   echo ""
   echo "Running final full-suite check..."
@@ -440,12 +387,8 @@ fi
 
 echo ""
 echo "═══════════════════════════════════════════════"
-if [[ $DEGRADED -gt 0 || $SKIPPED_SERVICES -gt 0 ]]; then
-  MSG="  $SUCCEEDED tasks completed"
-  [[ $DEGRADED -gt 0 ]] && MSG="$MSG, $DEGRADED degraded (review these manually)"
-  [[ $SKIPPED_SERVICES -gt 0 ]] && MSG="$MSG, $SKIPPED_SERVICES skipped (services unavailable)"
-  echo "$MSG"
-  [[ $SKIPPED_SERVICES -gt 0 ]] && echo "  Start required services and re-run skipped tasks with --start N"
+if [[ $DEGRADED -gt 0 ]]; then
+  echo "  $SUCCEEDED tasks completed ($DEGRADED degraded — review these manually)"
 else
   echo "  All $SUCCEEDED tasks completed successfully!"
 fi

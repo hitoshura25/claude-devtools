@@ -97,9 +97,9 @@ Determine whether your linter needs a wrapper script (see § "The lint wrapper p
   "tooling": {
     "lint_cmd": "<lint command or wrapper path>",
     "test_cmd": "<test command — cd is safe here>",
-    "language": "<python|typescript|kotlin|rust|go>",
-    "framework": "<pytest|jest|junit|cargo-test|go-test>",
-    "linter": "<ruff|eslint|ktlint|clippy|golangci-lint>"
+    "language": "<primary language>",
+    "framework": "<primary test framework>",
+    "linter": "<primary linter>"
   }
 }
 ```
@@ -107,6 +107,41 @@ Determine whether your linter needs a wrapper script (see § "The lint wrapper p
 ### If Setup Already Exists
 
 If the project already has working tooling, don't reinstall — verify the commands work from the project root and record them.
+
+---
+
+## Mixed-Technology Projects
+
+Real-world projects commonly mix service code (Python, TypeScript, etc.) with
+infrastructure files (Dockerfiles, compose files, Terraform, Kubernetes YAML).
+The global `lint_cmd` and `test_cmd` in the manifest's `tooling` block handle the
+service tasks. Infrastructure tasks need different tooling and get per-task
+overrides in the manifest.
+
+**When you see this, read `stacks/infra.md`** for the full infrastructure tooling
+guide. The short version:
+
+Scan every task's `files_created` list for these patterns:
+
+| File pattern | Action |
+|---|---|
+| `Dockerfile`, `*.dockerfile` | Set per-task `lint_cmd` to `infra-lint.sh`; write Docker smoke test |
+| `*compose*.yml`, `*compose*.yaml` | Set per-task `lint_cmd` to `infra-lint.sh`; write Docker smoke test |
+| `*.tf`, `*.tfvars` | Set per-task `lint_cmd` to `terraform validate <file>`; no automated test yet |
+| k8s YAML (`k8s/`, `kubernetes/`, `helm-charts/`) | Set per-task `lint_cmd` to `kubectl apply --dry-run=client -f <file>`; no automated test yet |
+
+The manifest supports a per-task `lint_cmd` field that overrides the global one
+for that task's aider invocation. Use it for any task whose files need a different
+linter than the project's primary language tooling.
+
+**Key principle: every task must have a test of some kind.** Infrastructure tasks
+use Docker smoke tests instead of unit tests. If a task's files can be
+meaningfully validated at runtime (container starts and responds), write the
+smoke test. If not (Terraform, k8s YAML), the lint check is the gate.
+
+The runner treats missing or null `test_command` as "no test for this task" — it
+does **not** fall back to the global test suite. Failing to provide a test for an
+infrastructure task means that task runs with lint-only validation.
 
 ---
 
@@ -120,11 +155,12 @@ After identifying the project's language and test framework, read the appropriat
 - Mutation testing tool and commands
 - Stub design patterns for the language
 
-| Language | Framework | Stack file |
-|----------|-----------|------------|
+| Language / Technology | Framework | Stack file |
+|---|---|---|
 | Python | pytest | `stacks/python-pytest.md` |
 | TypeScript / JavaScript | Jest | `stacks/typescript-jest.md` |
 | Kotlin / Java | JUnit (Gradle) | `stacks/kotlin-junit.md` |
+| Docker / Compose / infra | hadolint + smoke test | `stacks/infra.md` |
 | Rust | cargo test | see mutation table below, no stack file yet |
 | Go | go test | see mutation table below, no stack file yet |
 
@@ -234,5 +270,5 @@ If no mutation tool is practical (shell scripts, SQL, config-heavy projects), ap
 
 ```json
 "mutation_gate": "skipped",
-"mutation_gate_reason": "shell script — no mutation tool available"
+"mutation_gate_reason": "infrastructure config — no mutation tool applicable"
 ```

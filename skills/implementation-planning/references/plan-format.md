@@ -77,9 +77,30 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 **Depends on:** Tasks X.Y, X.Z, ...
 
-## Phase N+1: Integration Tests
+## Phase N+1: Deployment
 
-### Task N+1.1: [Integration Test Name]
+### Task N+1.1: [Service Name] Docker Deployment
+
+**Files:**
+- Create: `services/my-service/Dockerfile`
+- Create: `services/my-service/deployment/service.compose.yml`
+- Create: `services/my-service/deployment/service.test.compose.yml`
+
+**Behavior:**
+- [Base image, installed dependencies, entrypoint command]
+- [Environment variables the container reads]
+- [Port the service listens on and health check endpoint]
+- Production compose (`service.compose.yml`) connects to the shared platform network and assumes dependencies (MinIO, RabbitMQ, etc.) are pre-running
+- Test compose (`service.test.compose.yml`) is fully self-contained: includes the service AND all dependencies it needs as local services on a local bridge network — no external services required to run the smoke test
+
+**Test scenarios:**
+- [smoke_test]: Container builds and starts; health endpoint returns HTTP 200 within timeout
+
+**Depends on:** Task N.1
+
+## Phase N+2: Integration Tests
+
+### Task N+2.1: [Integration Test Name]
 
 **Requires services:** [e.g., minio, rabbitmq — live containers needed at runtime]
 
@@ -87,7 +108,7 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 - [End-to-end scenario descriptions]
 - [Deduplication/re-run behavior]
 
-**Depends on:** Task N.1
+**Depends on:** Task N+1.1
 ```
 
 ## Task Template
@@ -222,6 +243,17 @@ Write scenarios precise enough that Claude Code can derive correct assertions fr
 - Reference conftest fixtures by name when relevant
 - Include at least one error/empty case per component
 
+### Deployment Task Test Scenarios
+
+Deployment tasks (Phase 7) have a different test shape from component and wiring tasks. There is no interface contract to verify — the model produces infrastructure files, not API surfaces. The test scenario is always a smoke test:
+
+```
+**Test scenarios:**
+- [smoke_test]: Container builds successfully; service starts; health endpoint returns HTTP 200 within timeout
+```
+
+Claude Code writes a smoke test script (from a template) during Step 3b. The small model's job is to produce a Dockerfile and compose files that make the smoke test pass. The test compose must be self-contained — no external services required.
+
 ### Wiring Task Test Scenarios
 
 Wiring tasks have a required test scenario that component tasks do not:
@@ -269,7 +301,7 @@ Use this exact mock pattern:
 
 ## Phasing Guidelines
 
-The phase structure mirrors how an engineering team handles dependencies: build components in isolation first, then wire them together once all components are verified.
+The phase structure mirrors how an engineering team handles dependencies: build components in isolation first, wire them together, package them for deployment, then run integration tests against live services.
 
 ```
 Phase 1: Project Scaffolding     (Claude Code creates directly — not a task)
@@ -278,8 +310,8 @@ Phase 3: Infrastructure Clients  (external service wrappers)
 Phase 4: Primary Components      (main business logic — create files only, no wiring)
 Phase 5: Secondary Components    (additional component implementations)
 Phase 6: Wiring                  (dedicated tasks — generated upfront, sequenced after components)
-Phase 7: Deployment              (Docker, infra config)
-Phase 8: Integration Tests       (service-gated — generated upfront, skipped at runtime if services unavailable)
+Phase 7: Deployment              (Docker, compose files — sequenced after wiring, tested via smoke test)
+Phase 8: Integration Tests       (service-gated — generated upfront, hard-fail if services unavailable)
 ```
 
 **Phase 1 is special:** The project scaffold is created directly by Claude Code — not delegated to a small model.
@@ -295,7 +327,16 @@ A wiring task:
 - Runs the orchestrator test as its `test_command`
 - Is sequenced after all component tasks it depends on
 
-**Phase 8 — Integration Tests — is service-gated, not deferred.** Integration test task docs are written upfront alongside all other tasks, because what they must test (end-to-end data flow, deduplication behavior, service interactions) is fully knowable from the design doc and interface contracts — no runtime discovery is needed. They are **not** deferred. The distinction is in how the runner handles them at execution time: the runner checks whether required services (e.g. MinIO, RabbitMQ, a database) are reachable before executing the task, and skips it with a warning if they are not. When services are available, the task runs automatically in sequence after the wiring phase.
+**Phase 7 — Deployment — packages the service into a container and validates it runs.** Each deployment task creates two compose files: a production compose (connecting to the shared platform network, assuming dependencies are pre-running) and a self-contained test compose (bundling all dependencies as local services so the smoke test needs only Docker installed). Claude Code writes the smoke test script; the small model writes the Dockerfile and compose files. Deployment tasks are always sequenced after the wiring task they depend on — this ensures the container packages known-good code.
+
+A deployment task:
+- Creates `Dockerfile`, `service.compose.yml`, and `service.test.compose.yml`
+- Has no `Interface:` block — infrastructure files have no API surface to specify
+- Has a `[smoke_test]` scenario: container starts, health endpoint returns 200
+- Uses a per-task `lint_cmd` (hadolint + compose config) rather than the global language linter
+- Uses a Docker smoke test script as `test_command` rather than a unit test runner
+
+**Phase 8 — Integration Tests — is service-gated, not deferred.** Integration test task docs are written upfront alongside all other tasks, because what they must test (end-to-end data flow, deduplication behavior, service interactions) is fully knowable from the design doc and interface contracts — no runtime discovery is needed. They are **not** deferred. The distinction is in how the runner handles them at execution time: the runner checks whether required services (e.g. MinIO, RabbitMQ, a database) are reachable before executing the task. If services are unavailable, the run **fails with an error** — it does not skip. This ensures every run produces a complete, verified result. Start required services before running the task suite, or resume with `--start N` after starting them.
 
 In the manifest, integration test tasks use `"requires_services"` and `"service_check_commands"` — **not** `"deferred": true`. Do not mark integration tests as deferred in either the plan or the manifest.
 
@@ -309,7 +350,7 @@ These are two distinct categories. Confusing them produces incorrect runner beha
 
 In practice, **no task category in a well-specified plan should be deferred** once wiring tasks are generated upfront with `import_integrity` tests. Deferred tasks are a fallback for plans where interface contracts are too loosely specified to enumerate exact import paths ahead of time.
 
-**Service-gated** (`"requires_services": [...]` in the manifest, `"deferred": false`): The task doc exists and is complete upfront, but the task's execution requires live external services. The runner checks service health before executing and skips (not halts) if services are unavailable. This is the correct classification for **all integration tests**.
+**Service-gated** (`"requires_services": [...]` in the manifest, `"deferred": false`): The task doc exists and is complete upfront, but the task's execution requires live external services. The runner checks service health before executing and **exits with an error** if services are unavailable — it does not skip. This is the correct classification for **all integration tests**.
 
 | Condition | Classification |
 |---|---|
@@ -325,4 +366,4 @@ In practice, **no task category in a well-specified plan should be deferred** on
 - **Moderate tasks** (one class + its tests): 1 task per component
 - **Complex tasks** (multiple interacting files): split by responsibility, keeping tests with the component they test
 
-If a task has more than 2 files in its "Create" list, consider splitting it. Wiring tasks are an exception — they may modify several files but create none.
+If a task has more than 2 files in its "Create" list, consider splitting it. Wiring tasks are an exception — they may modify several files but create none. Deployment tasks are also an exception — they always create exactly three files (Dockerfile, production compose, test compose).
