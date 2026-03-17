@@ -91,6 +91,86 @@ Test it from the project root before recording in the manifest:
 
 ---
 
+## Base Image Verification (Step 3)
+
+Before writing a Dockerfile spec into a task doc, verify that every base image
+tag actually exists and that the Dockerfile builds successfully. Fabricated or
+imprecise tags (e.g. `apache/airflow:2.9-python3.11` when the real tag is
+`2.9.0-python3.11`) cause the small model to spiral — it cannot fix a spec
+error it was told to follow.
+
+### Step 1: Verify the tag exists
+
+For every `FROM` line in the planned Dockerfile, run:
+
+```bash
+docker manifest inspect <image>:<tag>
+```
+
+If `docker manifest inspect` fails, the tag does not exist. Search for the
+correct tag:
+
+```bash
+# List available tags (Docker Hub images)
+# Use web search or Docker Hub API — e.g.:
+curl -s "https://hub.docker.com/v2/repositories/<namespace>/<image>/tags/?page_size=50&name=<partial>" \
+  | python3 -c "import sys,json; [print(t['name']) for t in json.load(sys.stdin)['results']]"
+```
+
+For official Docker Hub images (e.g. `python`, `node`), replace `<namespace>`
+with `library`. For community images (e.g. `apache/airflow`), use the org name.
+
+Pick the tag that matches the project's requirements (language version, variant)
+and re-verify with `docker manifest inspect`. Do not proceed until the tag
+resolves.
+
+### Step 2: Write a draft Dockerfile and build it
+
+Write the Dockerfile into the service directory, then attempt a real build:
+
+```bash
+cd services/my-service
+docker build -t test-build-verify .
+```
+
+If the build fails, fix the Dockerfile and rebuild. Common failure modes include:
+
+- **Permission/user constraints**: Some base images (e.g. `apache/airflow`) run
+  as a non-root user and block `pip install` as root. Read the base image's
+  documentation or inspect its Dockerfile to find the correct install pattern.
+- **Missing system packages**: The base image may not include tools you expect
+  (e.g. `curl`, `gcc`). Add them in a `RUN` layer before the step that needs them.
+- **Package manager constraints**: Some images use `uv`, `pip`, or `pipx` with
+  specific flags. Match the base image's conventions rather than assuming a
+  generic `pip install` will work.
+
+The build must succeed before the Dockerfile spec is embedded in the task doc.
+A build failure at authoring time is cheap — a build failure during the small
+model's run wastes all its reflection budget on a problem it cannot fix.
+
+### Step 3: Run hadolint
+
+```bash
+hadolint services/my-service/Dockerfile
+```
+
+Fix any warnings. The Dockerfile that gets embedded in the task doc must pass
+hadolint with zero errors.
+
+### Step 4: Clean up
+
+Remove the test image after verification:
+
+```bash
+docker rmi test-build-verify 2>/dev/null || true
+```
+
+Record the verified Dockerfile spec in the task doc. The spec the small model
+receives has been proven to build — any smoke test failure is now the model's
+implementation issue, not an authoring error.
+
+---
+
 ## The Two-Compose Pattern
 
 Infrastructure tasks in a monorepo typically deal with two different compose needs:

@@ -490,6 +490,10 @@ class UUIDStore:
 
 Task doc Behavior entry: *"Must hold a persistent `self._conn` connection opened in `__init__` — do not open a new connection per method call."*
 
+**Mandatory test-authoring rule (Step 3b):** If any test fixture passes `":memory:"` to a SQLite-backed class, the task doc's `## Behavior` section **must** include the persistent connection instruction shown above. This is not optional — the `:memory:` fixture and the Behavior warning are a matched pair. Writing a `:memory:` fixture without the corresponding Behavior entry causes the small model to open separate connections per method, which works for file-backed DBs but silently breaks for `:memory:`, producing a "no such table" error that consumes all reflection attempts.
+
+**Verification before embedding tests:** After writing a test file that uses a `:memory:` fixture, confirm the task doc's Behavior section contains the persistent connection rule. If it does not, add it before proceeding.
+
 ### Trap 2 — Multi-column row-value constructor in IN clause
 
 SQLite does not support multi-column row-value constructors in `IN` clauses. The following raises `OperationalError: IN(...) element has 1 term - expected 2`:

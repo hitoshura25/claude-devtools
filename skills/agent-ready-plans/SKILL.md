@@ -80,6 +80,7 @@ If infrastructure tasks are present:
 - Copy `scripts/infra-lint-wrapper-template.sh` to the tasks folder as `infra-lint.sh`
 - For each Docker/compose task, copy `scripts/docker-smoke-test-template.sh` and configure `COMPOSE_FILE` and `HEALTH_URL`
 - Write the self-contained test compose file (see `stacks/infra.md` § "The Two-Compose Pattern")
+- **Verify base images and build the Dockerfile** (see `stacks/infra.md` § "Base Image Verification"). Run `docker manifest inspect` on every `FROM` tag, then `docker build` the Dockerfile against the project stubs. Fix any failures before proceeding — a broken Dockerfile spec wastes the small model's entire reflection budget on an unfixable authoring error.
 
 **Project scaffold:** Create these files directly (see Phase 1 in the implementation plan):
 - Build/package config with all dependencies, test config, and lint config
@@ -105,12 +106,15 @@ Read `references/writing-guide.md` § "Writing Correct Tests" for the full rules
 4. Run tests against the stub; verify all fail for the right reason
 5. Replace stub bodies with "not implemented" once gates pass
 
-**For infrastructure tasks — validate the smoke test script:**
+**For infrastructure tasks — validate the Dockerfile build and smoke test script:**
 
-1. Confirm the smoke test script is configured correctly (`COMPOSE_FILE`, `HEALTH_URL`)
-2. Run `bash docs/plans/my-tasks/smoke-test-*.sh` from the project root
-3. Confirm it fails appropriately against stubs (build failure or health endpoint timeout)
-4. Confirm it succeeds when a working implementation exists
+1. **Verify base image tags** — run `docker manifest inspect` on every `FROM` image (see `stacks/infra.md` § "Base Image Verification"). If a tag doesn't resolve, find the correct one before proceeding.
+2. **Build the Dockerfile** — run `docker build` against the service directory with stubs in place. Fix any build failures (wrong user, missing packages, permission errors). The Dockerfile must build successfully before its spec is embedded in a task doc.
+3. **Run hadolint** — confirm zero errors on the built Dockerfile.
+4. Confirm the smoke test script is configured correctly (`COMPOSE_FILE`, `HEALTH_URL`)
+5. Run `bash docs/plans/my-tasks/smoke-test-*.sh` from the project root
+6. Confirm it fails appropriately against stubs (health endpoint timeout — the build itself should now succeed thanks to steps 1–3)
+7. Clean up: `docker rmi test-build-verify 2>/dev/null || true`
 
 **Record validation results in the manifest** (Step 6): service tasks get `"pre_validated": true` and `"test_file"`. Infrastructure tasks get `"pre_validated": true` (confirming the smoke test script is wired correctly) but no `"test_file"`.
 
