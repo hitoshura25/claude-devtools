@@ -244,109 +244,39 @@ This catches missing submodule entries immediately, before the small model ever 
 
 ## External Dependency Mock Fixtures
 
-### Google Drive API v3
+Read `references/stacks/python-pytest/fixture-patterns.md` for the complete fixture template system.
 
-```python
-@pytest.fixture
-def mock_drive_service():
-    """Pre-wired Google Drive API v3 mock.
+Fixtures are categorized by **behavioral pattern**, not by technology. This matters
+because each pattern has different rules about what tests can and cannot assert:
 
-    Usage:
-        def test_download(mock_drive_service):
-            mock_drive_service["file_bytes"] = b"my content"
-            # call your client, assert results
+| Pattern | Purpose | Tests CAN assert | Tests CANNOT assert |
+|---------|---------|-------------------|---------------------|
+| **Capture mock** | Replace a function, capture its args | What args were passed | Output the original function would produce |
+| **Client mock** | Replace a constructor, record method calls | Which methods called, with what kwargs | Return values (unless explicitly set) |
+| **Stateful fake** | Real logic on a fake backend | Actual outcomes | Identical edge-case behavior to production |
 
-    Provides:
-        ["service"]    — the mocked Drive service object
-        ["file_bytes"] — set to control download content (default: b"test data")
-        ["file_list"]  — set to control files().list() results
-    """
-    with patch("plugins.clients.google_drive_client.build") as mock_build, \
-         patch("plugins.clients.google_drive_client.Credentials") as mock_creds, \
-         patch("plugins.clients.google_drive_client.MediaIoBaseDownload") as mock_dl_cls:
+The most critical rule: **when a test uses a capture mock, do not assert on side effects
+the captured function would have produced.** This is the #1 source of logically impossible
+tests — the mock prevents the behavior the assertion checks, and the small model exhausts
+all reflections on an unfixable contradiction.
 
-        mock_service = MagicMock()
-        mock_build.return_value = mock_service
+**During Step 3 (conftest setup):**
+1. Read `python-pytest/fixture-patterns.md`
+2. For each external dependency, pick the appropriate pattern
+3. Copy the template, replace the patch paths for the project's module structure
 
-        state = {
-            "service": mock_service,
-            "file_bytes": b"test data",
-            "file_list": [{"id": "file-123", "name": "test.zip"}],
-        }
+**During Step 3b (test writing):**
+1. Before combining multiple fixtures in one test, check the interaction rules in `python-pytest/fixture-patterns.md` § "Fixture Interaction Rules"
+2. If a test needs to assert on output bytes AND verify correct args, split into two tests
 
-        mock_service.files.return_value.list.return_value.execute.return_value = {
-            "files": state["file_list"]
-        }
+### Technology-Specific Traps
 
-        def download_side_effect(fh, request):
-            downloader = MagicMock()
-            def next_chunk():
-                fh.write(state["file_bytes"])
-                return (MagicMock(progress=lambda: 1.0), True)
-            downloader.next_chunk = next_chunk
-            return downloader
-
-        mock_dl_cls.side_effect = download_side_effect
-        yield state
-```
-
-### boto3 S3 / MinIO
-
-```python
-@pytest.fixture
-def mock_s3_client():
-    """Pre-wired boto3 S3 client mock with put_object capture.
-
-    Usage:
-        def test_upload(mock_s3_client):
-            body = mock_s3_client["captured_body"]()
-    """
-    with patch("plugins.writers.minio_writer.boto3.client") as mock_client_cls:
-        mock_s3 = MagicMock()
-        mock_client_cls.return_value = mock_s3
-
-        yield {
-            "client": mock_s3,
-            "captured_body":   lambda: mock_s3.put_object.call_args[1]["Body"],
-            "captured_key":    lambda: mock_s3.put_object.call_args[1]["Key"],
-            "captured_bucket": lambda: mock_s3.put_object.call_args[1]["Bucket"],
-        }
-```
-
-### pika / RabbitMQ
-
-```python
-@pytest.fixture
-def mock_pika_connection():
-    """Pre-wired pika.BlockingConnection mock.
-
-    Usage:
-        def test_publish(mock_pika_connection):
-            call_args = mock_pika_connection["channel"].basic_publish.call_args
-
-    NOTE: mock_conn.is_closed is explicitly set to False.
-    See "Pika Connection Lifecycle Trap" below for why this matters.
-    """
-    with patch("plugins.writers.rabbitmq_publisher.pika.BlockingConnection") as mock_conn_cls:
-        mock_conn = MagicMock()
-        mock_conn.is_closed = False  # MagicMock() is truthy; set explicitly so
-                                     # `not conn.is_closed` evaluates correctly if
-                                     # the implementation guards close() with it
-        mock_channel = MagicMock()
-        mock_conn_cls.return_value = mock_conn
-        mock_conn.channel.return_value = mock_channel
-
-        yield {
-            "connection_cls": mock_conn_cls,
-            "connection": mock_conn,
-            "channel": mock_channel,
-        }
-```
+These traps apply regardless of which fixture pattern is used. They are about specific
+library/mock behaviors that consistently break small models.
 
 #### Pika Connection Lifecycle Trap
 
-Small models (Qwen in particular) write a defensive `is_closed` guard when closing a pika
-connection:
+Small models write a defensive `is_closed` guard when closing a pika connection:
 
 ```python
 # WRONG — is_closed on a MagicMock is a MagicMock (truthy)
@@ -356,18 +286,12 @@ finally:
         connection.close()
 ```
 
-When the test asserts `mock_pika_connection["connection"].close.assert_called()`, it fails
-because `close()` was never invoked. The model exhausts all reflections without finding the
-root cause because the logic looks correct — it simply doesn't account for how MagicMock
-attributes behave.
+**Fix in the fixture:** The pika client mock template in `python-pytest/fixture-patterns.md` sets
+`mock_conn.is_closed = False` explicitly. This makes the guard evaluate correctly even
+if the model writes it.
 
-**The fix in the fixture** (already applied above): set `mock_conn.is_closed = False`
-explicitly. This makes the guard evaluate correctly even if the model writes it, so tests
-pass regardless of whether the model uses the guard or not.
-
-**The fix in task docs**: the Behavior section for any RabbitMQ publisher must show the
-`finally` block as a code snippet and use the unconditional form — do not guard with
-`is_closed`:
+**Fix in task docs:** The Behavior section for any RabbitMQ publisher must show the
+`finally` block as a code snippet using the unconditional form:
 
 ```python
 # CORRECT — unconditional close; works with both real pika and mock
@@ -386,34 +310,12 @@ Task doc Behavior entry:
   and will prevent close() from being called in tests.
 ```
 
----
+#### Positional Argument Trap — fastavro
 
-### Positional Argument Trap — fastavro
-
-`fastavro.writer(fo, schema, records)` — models consistently swap args 2 and 3. Both orderings look plausible; the error only surfaces at runtime when fastavro tries to parse `records` as a schema dict.
-
-```python
-@pytest.fixture
-def mock_fastavro_writer():
-    """Patches fastavro.writer to avoid positional arg order errors.
-
-    Captures (schema, records) for test assertions.
-    Usage:
-        def test_write(mock_fastavro_writer):
-            schema, records = mock_fastavro_writer["last_call"]
-            assert schema["type"] == "record"
-    """
-    with patch("plugins.writers.minio_writer.fastavro.writer") as mock_writer:
-        state = {"last_call": None}
-
-        def capture(fo, schema, records):
-            state["last_call"] = (schema, records)
-
-        mock_writer.side_effect = capture
-        yield state
-```
-
-Apply the same fixture-capture pattern to any library with the positional trap signal (see `tooling.md` § "Positional Argument Traps").
+`fastavro.writer(fo, schema, records)` — models consistently swap args 2 and 3. The
+capture mock template in `python-pytest/fixture-patterns.md` handles this by capturing the args for
+assertion. Apply the same capture-mock pattern to any library where positional argument
+order is ambiguous (see `tooling.md` § "Positional Argument Traps").
 
 ---
 

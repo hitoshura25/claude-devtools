@@ -82,9 +82,11 @@ If infrastructure tasks are present:
 - Write the self-contained test compose file (see `stacks/infra.md` § "The Two-Compose Pattern")
 - **Verify base images and build the Dockerfile** (see `stacks/infra.md` § "Base Image Verification"). Run `docker manifest inspect` on every `FROM` tag, then `docker build` the Dockerfile against the project stubs. Fix any failures before proceeding — a broken Dockerfile spec wastes the small model's entire reflection budget on an unfixable authoring error.
 
+**Conftest fixtures (Python/pytest):** Read `references/stacks/python-pytest/fixture-patterns.md` for the fixture template system. For each external dependency, pick the appropriate pattern (capture mock, client mock, or stateful fake), copy the template, and adjust the patch paths for the project's module structure. Follow the fixture interaction rules — they prevent logically impossible tests.
+
 **Project scaffold:** Create these files directly (see Phase 1 in the implementation plan):
 - Build/package config with all dependencies, test config, and lint config
-- Test setup file with fixtures
+- Test setup file with fixtures (from fixture-patterns.md templates)
 - All package `__init__` files or equivalent for the language
 - A stub file for each task (see Step 3b)
 
@@ -102,9 +104,10 @@ Read `references/writing-guide.md` § "Writing Correct Tests" for the full rules
 
 1. Create a minimal stub implementation (importable but raises "not implemented")
 2. Write the test file against the stub
-3. Run the mutation gate — see `references/tooling.md` § "Mutation Testing"
-4. Run tests against the stub; verify all fail for the right reason
-5. Replace stub bodies with "not implemented" once gates pass
+3. **Check fixture interaction rules** — if a test uses multiple fixtures, verify in `python-pytest/fixture-patterns.md` § "Fixture Interaction Rules" that the combination is valid. Do not combine a capture mock with an assertion on the captured function's output.
+4. Run the mutation gate — see `references/tooling.md` § "Mutation Testing"
+5. Run tests against the stub; verify all fail for the right reason
+6. Replace stub bodies with "not implemented" once gates pass
 
 **For infrastructure tasks — validate the Dockerfile build and smoke test script:**
 
@@ -236,6 +239,7 @@ Generate task files sequentially in the main session. Write each file to disk be
 | `task-template.md` | Step 5 — complete template with all sections |
 | `references/tooling.md` | Steps 2, 3, 3b — tooling discovery, fixture criteria, mutation gate, mixed-technology projects |
 | `references/stacks/<language>-<framework>.md` | Steps 2, 3, 3b — language-specific install, lint wrapper, fixtures, stubs, mutation tool |
+| `references/stacks/python-pytest/fixture-patterns.md` | Step 3 (conftest), Step 3b (test writing) — Python/pytest fixture templates by behavioral pattern, interaction rules |
 | `references/stacks/infra.md` | Steps 2, 3, 3b — when any task creates Dockerfile/compose/Terraform/k8s files |
 | `references/writing-guide.md` | Steps 3b, 5 — test correctness, stub design, task scope, deferred/service-gated guidance |
 | `scripts/lint-ruff-wrapper.sh` | Step 3, Python/ruff — copy to tasks folder, update `RUFF_BIN` |
