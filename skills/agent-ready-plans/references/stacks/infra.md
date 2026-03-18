@@ -124,9 +124,10 @@ Pick the tag that matches the project's requirements (language version, variant)
 and re-verify with `docker manifest inspect`. Do not proceed until the tag
 resolves.
 
-### Step 2: Write a draft Dockerfile and build it
+### Step 2: Write a draft Dockerfile, build it, and pin versions
 
-Write the Dockerfile into the service directory, then attempt a real build:
+Write the Dockerfile into the service directory with **unpinned** dependencies first,
+then build to resolve versions:
 
 ```bash
 cd services/my-service
@@ -144,9 +145,42 @@ If the build fails, fix the Dockerfile and rebuild. Common failure modes include
   specific flags. Match the base image's conventions rather than assuming a
   generic `pip install` will work.
 
-The build must succeed before the Dockerfile spec is embedded in the task doc.
-A build failure at authoring time is cheap — a build failure during the small
-model's run wastes all its reflection budget on a problem it cannot fix.
+**After a successful build, capture the resolved versions and pin them in the
+Dockerfile.** This satisfies hadolint DL3013 (pin versions in pip) and ensures
+reproducible builds. Run:
+
+```bash
+docker run --rm test-build-verify pip freeze
+```
+
+Find the installed versions for each package in the `RUN pip install` line and
+replace the unpinned names with pinned versions. For example:
+
+```dockerfile
+# BEFORE (unpinned — used for initial build verification only)
+RUN pip install --no-cache-dir fastavro boto3 pika
+
+# AFTER (pinned — from pip freeze output of successful build)
+RUN pip install --no-cache-dir \
+    fastavro==1.9.7 \
+    boto3==1.35.99 \
+    pika==1.3.2
+```
+
+Use the exact versions from `pip freeze` — do not fabricate version numbers.
+If a package is already installed in the base image (common for Airflow images),
+it will appear in `pip freeze` even if it wasn't in the `RUN pip install` line;
+only pin packages that are explicitly listed in the install command.
+
+Rebuild with pinned versions to confirm:
+
+```bash
+docker build -t test-build-verify .
+```
+
+The build must succeed with pinned versions before the Dockerfile spec is embedded
+in the task doc. A build failure at authoring time is cheap — a build failure during
+the small model's run wastes all its reflection budget on a problem it cannot fix.
 
 ### Step 3: Run hadolint
 
@@ -155,7 +189,8 @@ hadolint services/my-service/Dockerfile
 ```
 
 Fix any warnings. The Dockerfile that gets embedded in the task doc must pass
-hadolint with zero errors.
+hadolint with **zero warnings** — including DL3013 (pin versions). Because
+versions were pinned in Step 2, DL3013 should not fire.
 
 ### Step 4: Clean up
 
@@ -166,8 +201,8 @@ docker rmi test-build-verify 2>/dev/null || true
 ```
 
 Record the verified Dockerfile spec in the task doc. The spec the small model
-receives has been proven to build — any smoke test failure is now the model's
-implementation issue, not an authoring error.
+receives has pinned versions proven to build on the target base image — any
+smoke test failure is now the model's implementation issue, not an authoring error.
 
 ---
 
