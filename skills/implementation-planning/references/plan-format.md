@@ -87,7 +87,7 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 - Create: `services/my-service/deployment/service.test.compose.yml`
 
 **Behavior:**
-- [Base image family and language version requirement — e.g. "Apache Airflow with Python 3.11". Do NOT specify an exact tag here; Claude Code verifies the actual tag via `docker manifest inspect` during task-doc authoring and embeds the verified tag in the task doc's Dockerfile spec.]
+- [Base image family and language version requirement — e.g. "Apache Airflow with Python 3.11". Do NOT specify an exact tag here; Claude Code verifies the actual tag via `docker manifest inspect` during task-doc authoring and writes the verified tag into the task doc's Dockerfile spec.]
 - [Installed dependencies, entrypoint command]
 - [Environment variables the container reads]
 - [Port the service listens on and health check endpoint]
@@ -116,7 +116,7 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 Each task defines an interface contract that the small model implements. The precision of the contract determines whether the model produces correct code.
 
-**Tests and implementation belong in the same task.** Claude Code writes the test file during the scaffold phase and embeds it in the task doc. The small model implements against it. Never split the test file into a separate task from its implementation.
+**Tests and implementation belong in the same task.** Claude Code writes the test file during the scaffold phase and saves it to disk. The task doc references the test file by path — it does not embed a copy. The small model reads the test file directly and implements the code to pass it. Never split the test file into a separate task from its implementation.
 
 **Component tasks only create files — they never modify shared files.** No `Modify:` entries in component tasks. Wiring (adding to a registry, DAG, router, or dispatcher) is always a separate, dedicated task that runs after all components are complete. See § "Phasing Guidelines" below.
 
@@ -330,7 +330,7 @@ A wiring task:
 
 **Phase 7 — Deployment — packages the service into a container and validates it runs.** Each deployment task creates two compose files: a production compose (connecting to the shared platform network, assuming dependencies are pre-running) and a self-contained test compose (bundling all dependencies as local services so the smoke test needs only Docker installed). Claude Code writes the smoke test script; the small model writes the Dockerfile and compose files. Deployment tasks are always sequenced after the wiring task they depend on — this ensures the container packages known-good code.
 
-The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. Claude Code resolves and verifies the actual tag during task-doc authoring via `docker manifest inspect`, then builds the Dockerfile against stubs to confirm it works before embedding the spec. This prevents the small model from receiving a broken Dockerfile it cannot fix.
+The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. Claude Code resolves and verifies the actual tag during task-doc authoring via `docker manifest inspect`, then builds the Dockerfile against stubs to confirm it works before writing the spec into the task doc. This prevents the small model from receiving a broken Dockerfile it cannot fix.
 
 A deployment task:
 - Creates `Dockerfile`, `service.compose.yml`, and `service.test.compose.yml`
@@ -338,13 +338,13 @@ A deployment task:
 - Has a `[smoke_test]` scenario: container starts, health endpoint returns 200
 - Uses a per-task `lint_cmd` (hadolint + compose config) rather than the global language linter
 - Uses a Docker smoke test script as `test_command` rather than a unit test runner
-- The Dockerfile spec embedded in the task doc has been verified to build by Claude Code — if the smoke test fails during the run, the failure is in the model's implementation, not the spec
+- The Dockerfile spec in the task doc has been verified to build by Claude Code — if the smoke test fails during the run, the failure is in the model's implementation, not the spec
 
 **Phase 8 — Integration Tests — is service-gated, not deferred.** Integration test task docs are written upfront alongside all other tasks, because what they must test (end-to-end data flow, deduplication behavior, service interactions) is fully knowable from the design doc and interface contracts — no runtime discovery is needed. They are **not** deferred. The distinction is in how the runner handles them at execution time: the runner checks whether required services (e.g. MinIO, RabbitMQ, a database) are reachable before executing the task. If services are unavailable, the run **fails with an error** — it does not skip. This ensures every run produces a complete, verified result. Start required services before running the task suite, or resume with `--start N` after starting them.
 
 In the manifest, integration test tasks use `"requires_services"` and `"service_check_commands"` — **not** `"deferred": true`. Do not mark integration tests as deferred in either the plan or the manifest.
 
-This structure means a broken wiring task cannot cascade-fail component tasks — components were already verified in isolation. And a broken component is caught at the wiring task's import integrity test, not silently embedded in passing orchestrator logic.
+This structure means a broken wiring task cannot cascade-fail component tasks — components were already verified in isolation. And a broken component is caught at the wiring task's import integrity test, not silently passing through the orchestrator.
 
 ## Deferred Tasks vs Service-Gated Tasks
 

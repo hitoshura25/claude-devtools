@@ -5,9 +5,9 @@ description: Decompose implementation plans into individual task files for small
 
 # Agent-Ready Plans
 
-Translate a design document + implementation plan into self-contained task files that smaller AI coding agents can execute sequentially. Each task is an aider `--message-file` with an interface contract, behavioral specs, and pre-written tests — everything a small model needs to implement and test one component.
+Translate a design document + implementation plan into self-contained task files that smaller AI coding agents can execute sequentially. Each task is an aider `--message-file` with an interface contract, behavioral specs, and a reference to pre-written tests — everything a small model needs to implement and test one component.
 
-The key insight: Claude Code writes complete, verified tests for each task. The small model implements the code to make them pass. Claude Code owns test correctness — the small model owns implementation. This gives the small model a concrete, verifiable success criterion without relying on its ability to write correct tests from vague specs.
+The key insight: Claude Code writes complete, verified tests for each task and saves them to disk. The small model implements the code to make them pass. Claude Code owns test correctness — the small model owns implementation.
 
 Announce at start: "I'm using the agent-ready-plans skill to break this plan into individual task files."
 
@@ -33,101 +33,91 @@ docs/plans/my-service-tasks/
 └── run-tasks.sh
 ```
 
-Note: task numbering starts at Phase 2 because Phase 1 (scaffold) is created directly by Claude Code in Step 3.
-
-Each plan gets its own uniquely-named folder — reusing a generic `tasks/` directory causes collisions when decomposing multiple plans.
+Task numbering starts at Phase 2 because Phase 1 (scaffold) is created directly by Claude Code in Step 3.
 
 ## Process
 
 ### 0. Check for Stale Git Artifacts — Do This First
 
-Before touching anything, check whether output files from a previous run exist in git history:
+Check whether output files from a previous run exist in git history:
 
 ```bash
 git ls-tree -r HEAD --name-only | grep "docs/plans/.*-tasks/"
 ```
 
-If previous task files, scaffold files, or a runner script appear in HEAD, **do not restore them with `git checkout HEAD`**. Those files are stale — the user deleted them intentionally to trigger a fresh regeneration incorporating skill updates. Restoring from git silently skips all skill improvements made since the last run.
-
-Instead: proceed with the full process from Step 1. Generate everything fresh from the current skill files.
+If previous files appear in HEAD, **do not restore them with `git checkout HEAD`**. Those files are stale — the user deleted them to trigger a fresh regeneration. Proceed with the full process from Step 1.
 
 ### 1. Read and Analyze
 
-Read both the design doc and implementation plan. Build a mental model of total tasks, dependencies between phases, interface contracts, and the project's language/tooling.
+Read both the design doc and implementation plan. Build a mental model of total tasks, dependencies, interface contracts, and the project's language/tooling.
 
-**Also scan for infrastructure tasks:** Check whether any task's `files_created` includes `Dockerfile`, `*compose*.yml`, `*.tf`, or Kubernetes YAML. Infrastructure tasks require different tooling than service tasks — flag these now so you can set them up in Step 3.
+**Scan for infrastructure tasks:** Check whether any task's `files_created` includes `Dockerfile`, `*compose*.yml`, `*.tf`, or Kubernetes YAML. These require different tooling — flag them now.
 
 ### 2. Determine Test & Lint Tooling
 
-Identify the primary lint and test commands for the project. These power aider's `--auto-lint` and `--auto-test` flags for all service tasks.
+Read `references/tooling.md` for the discovery process. Then read the appropriate `references/stacks/<language>-<framework>.md`.
 
-Read `references/tooling.md` for the full discovery process. Then:
-- Read the appropriate `references/stacks/<language>-<framework>.md` for the project's primary language
-- **If infrastructure tasks were flagged in Step 1**, also read `references/stacks/infra.md` — infrastructure tasks use hadolint, `docker compose config`, and Docker smoke tests instead of language unit tests, and the manifest supports per-task `lint_cmd` overrides for exactly this case
+If infrastructure tasks were flagged, also read `references/stacks/infra.md` — infrastructure tasks use hadolint and Docker smoke tests, and the manifest supports per-task `lint_cmd` overrides.
 
-**Every task must have a test.** Service tasks get unit tests; infrastructure tasks get Docker smoke tests (or lint-only for Terraform/k8s). No task should have a null/empty `test_command` unless it genuinely has nothing to validate — and that situation is rare.
+**Every task must have a test.** Service tasks get unit tests; infrastructure tasks get Docker smoke tests.
 
 ### 3. Set Up Tooling and Scaffold (execute directly)
 
-This is the most important step for reliability. Install tooling and create the project scaffold *right now*, directly in the current Claude Code session — do not delegate these to task files for the small model.
+Install tooling and create the project scaffold *right now* — do not delegate to task files. Small models can write business logic but can't debug missing tools, broken configs, or subtle test setup.
 
-Small models can write business logic code, but they can't debug missing tool installations, broken configs, environment issues, or subtle test setup patterns. Claude Code can. By handling setup and scaffold here, every subsequent task starts with a working foundation.
-
-**Tooling setup:** Read `references/tooling.md` and the appropriate stack files. Investigate the project's existing conventions first, then set up tooling consistently with what's already there.
+**Tooling setup:** Read `references/tooling.md` and the appropriate stack files. Investigate existing project conventions first.
 
 If infrastructure tasks are present:
 - Install `hadolint` (see `stacks/infra.md` § "Tooling Setup")
-- Copy `scripts/infra-lint-wrapper-template.sh` to the tasks folder as `infra-lint.sh`
+- Copy `scripts/infra-lint-wrapper-template.sh` → `infra-lint.sh`
 - For each Docker/compose task, copy `scripts/docker-smoke-test-template.sh` and configure `COMPOSE_FILE` and `HEALTH_URL`
 - Write the self-contained test compose file (see `stacks/infra.md` § "The Two-Compose Pattern")
-- **Verify base images and build the Dockerfile** (see `stacks/infra.md` § "Base Image Verification"). Run `docker manifest inspect` on every `FROM` tag, then `docker build` the Dockerfile against the project stubs. Fix any failures before proceeding — a broken Dockerfile spec wastes the small model's entire reflection budget on an unfixable authoring error.
+- **Verify base images and build the Dockerfile** (see `stacks/infra.md` § "Base Image Verification"). Run `docker manifest inspect` on every `FROM` tag, then `docker build` against stubs. Fix failures before proceeding.
 
-**Conftest fixtures (Python/pytest):** Read `references/stacks/python-pytest/fixture-patterns.md` for the fixture template system. For each external dependency, pick the appropriate pattern (capture mock, client mock, or stateful fake), copy the template, and adjust the patch paths for the project's module structure. Follow the fixture interaction rules — they prevent logically impossible tests.
+**Conftest fixtures (Python/pytest):** Read `references/stacks/python-pytest/fixture-patterns.md`. For each external dependency, pick the appropriate pattern (capture mock, client mock, or stateful fake), copy the template, and adjust patch paths. Follow the fixture interaction rules.
 
-**Project scaffold:** Create these files directly (see Phase 1 in the implementation plan):
-- Build/package config with all dependencies, test config, and lint config
+**Project scaffold:** Create these files directly (see Phase 1 in the plan):
+- Build/package config with all dependencies, test config, lint config
 - Test setup file with fixtures (from fixture-patterns.md templates)
-- All package `__init__` files or equivalent for the language
+- All package `__init__` files
 - A stub file for each task (see Step 3b)
 
-**Stub files must not execute code that requires runtime environment.** See `references/writing-guide.md` § "Stub Design" and the stack file for language-specific examples.
+**Stub files must not execute code that requires runtime environment.** See `references/writing-guide.md` § "Stub Design".
 
 After setup, verify both lint and test commands pass. Do NOT commit or stage any files.
 
 ### 3b. Write and Validate Task Tests
 
-For each task in the plan, write its test file now — before generating task documents.
+For each task, write its test file to disk now — before generating task documents.
 
-Read `references/writing-guide.md` § "Writing Correct Tests" for the full rules. Key requirements:
+Read `references/writing-guide.md` § "Writing Correct Tests" for the full rules.
 
-**For service tasks — write tests against stubs, then validate with the mutation gate:**
+**For service tasks:**
 
-1. Create a minimal stub implementation (importable but raises "not implemented")
-2. Write the test file against the stub
-3. **Check fixture interaction rules** — if a test uses multiple fixtures, verify in `python-pytest/fixture-patterns.md` § "Fixture Interaction Rules" that the combination is valid. Do not combine a capture mock with an assertion on the captured function's output.
-4. Run the mutation gate — see `references/tooling.md` § "Mutation Testing"
-5. Run tests against the stub; verify all fail for the right reason
-6. Replace stub bodies with "not implemented" once gates pass
+1. Write the test file against the stub
+2. **Check fixture interaction rules** — verify in `python-pytest/fixture-patterns.md` § "Fixture Interaction Rules" that fixture combinations are valid
+3. Run the mutation gate (see `references/tooling.md` § "Mutation Testing")
+4. Run tests against the stub; verify all fail for the right reason
+5. Replace stub bodies with "not implemented" once gates pass
 
-**For infrastructure tasks — validate the Dockerfile build and smoke test script:**
+**For infrastructure tasks:**
 
-1. **Verify base image tags** — run `docker manifest inspect` on every `FROM` image (see `stacks/infra.md` § "Base Image Verification"). If a tag doesn't resolve, find the correct one before proceeding.
-2. **Build the Dockerfile** — run `docker build` against the service directory with stubs in place. Fix any build failures (wrong user, missing packages, permission errors). The Dockerfile must build successfully before its spec is embedded in a task doc.
-3. **Run hadolint** — confirm zero errors on the built Dockerfile.
-4. Confirm the smoke test script is configured correctly (`COMPOSE_FILE`, `HEALTH_URL`)
-5. Run `bash docs/plans/my-tasks/smoke-test-*.sh` from the project root
-6. Confirm it fails appropriately against stubs (health endpoint timeout — the build itself should now succeed thanks to steps 1–3)
-7. Clean up: `docker rmi test-build-verify 2>/dev/null || true`
+1. Verify base image tags via `docker manifest inspect`
+2. Build the Dockerfile via `docker build` against stubs — fix any failures
+3. Run hadolint — confirm zero errors
+4. Confirm the smoke test script is configured correctly
+5. Run the smoke test; confirm it fails appropriately against stubs (health timeout, not build failure)
+6. Clean up: `docker rmi test-build-verify 2>/dev/null || true`
 
-**Record validation results in the manifest** (Step 6): service tasks get `"pre_validated": true` and `"test_file"`. Infrastructure tasks get `"pre_validated": true` (confirming the smoke test script is wired correctly) but no `"test_file"`.
+**Record validation results in the manifest** (Step 6): service tasks get `"pre_validated": true` and `"test_file"`. Infrastructure tasks get `"pre_validated": true` but no `"test_file"`.
 
 ### 4. Extract Project Context
 
-Extract a shared context block from the design doc (10-15 lines max). Embed at the top of every task file. Include: what the project does, tech stack, key directory structure, lint/test commands, naming conventions, and available test fixtures. Always end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.`
+Extract a shared context block from the design doc (10-15 lines max). Include: what the project does, tech stack, directory structure, lint/test commands, conventions, available fixtures. Always end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.`
 
 ### 5. Generate Task Documents
 
-For each task in the implementation plan (starting from Phase 2), generate a standalone markdown file. Read `task-template.md` for the complete template structure.
+For each task (starting from Phase 2), generate a standalone markdown file. Read `task-template.md` for the complete template.
 
 **Naming:** `NN-task-X.Y-short-description.md`
 
@@ -135,15 +125,15 @@ Key principles:
 - **Self-contained.** Inline all relevant context.
 - **Explicit file paths** from project root.
 - **Interface contracts, not implementation code** (for service tasks).
-- **Tests are pre-written by Claude Code** — embed the test file verbatim in `## Tests`.
+- **Tests are referenced by path, not embedded.** The `## Tests` section points to the on-disk test file path — it does not contain a copy of the test code. This eliminates divergence between the validated test and what the model reads. See `task-template.md` § "Tests" for the format.
 - **Component tasks create files only — never modify shared files.** See `references/writing-guide.md` § "Task Scope".
-- **Infrastructure tasks:** The model creates Dockerfiles and compose files. Claude Code has already written the smoke test script. The task doc tells the model what files to create and what behaviour to implement; it does not embed the smoke test script.
+- **Infrastructure tasks:** The model creates Dockerfiles and compose files. Claude Code has already written the smoke test script. The task doc describes what to create; it does not embed the script.
 
 **Deferred vs service-gated:** See `references/writing-guide.md` § "Deferred Tasks vs Service-Gated Tasks".
 
 ### 6. Generate the Manifest
 
-Create `00-manifest.json`. The `tooling` block holds the global defaults. Tasks can override `lint_cmd` individually — infrastructure tasks always should.
+Create `00-manifest.json`. The `tooling` block holds global defaults. Tasks can override `lint_cmd` individually — infrastructure tasks always should.
 
 ```json
 {
@@ -164,8 +154,7 @@ Create `00-manifest.json`. The `tooling` block holds the global defaults. Tasks 
       "task_id": "2.1",
       "title": "Settings",
       "phase": "Core Abstractions",
-      "files_created": ["services/my-service/config/settings.py",
-                        "services/my-service/tests/test_settings.py"],
+      "files_created": ["services/my-service/config/settings.py"],
       "files_modified": [],
       "test_command": "cd services/my-service && uv run pytest tests/test_settings.py -x -q",
       "test_file": "services/my-service/tests/test_settings.py",
@@ -212,37 +201,33 @@ Create `00-manifest.json`. The `tooling` block holds the global defaults. Tasks 
 }
 ```
 
-Note: `requires_services` is now a hard requirement — the runner exits if services are unavailable, rather than skipping. Start services before running tasks that need them.
+Note: `requires_services` is a hard requirement — the runner exits if services are unavailable.
 
 ### 7. Generate the Runner Script
 
-Copy `scripts/run-tasks-template.sh` verbatim into the output folder as `run-tasks.sh`. Do NOT rewrite it — the template is the correct, tested implementation.
+Copy `scripts/run-tasks-template.sh` verbatim into the output folder as `run-tasks.sh`. Do NOT rewrite it.
 
-**Do not restore `run-tasks.sh` from git history.** Always copy from `scripts/run-tasks-template.sh`.
+**Do not restore `run-tasks.sh` from git history.** Always copy from the template.
 
 After copying, make exactly two targeted edits if needed:
 - `DEFAULT_MODEL` — update if the project uses a different local model
-- `PROJECT_ROOT` path calculation — update if the tasks folder is not 3 levels below the project root
+- `PROJECT_ROOT` path calculation — update if the tasks folder depth differs
 
 ### 8. Present Results
 
-Summarize what was generated: scaffold created, N task files, M infrastructure tasks with smoke tests, manifest, runner. Include the phase breakdown and the commands to run.
-
-## Execution Notes
-
-Generate task files sequentially in the main session. Write each file to disk before moving to the next. Show progress as you go.
+Summarize what was generated: scaffold created, N task files, M infrastructure tasks with smoke tests, manifest, runner. Include the phase breakdown and commands to run.
 
 ## Bundled Resources
 
 | Resource | When to read |
 |----------|-------------|
 | `task-template.md` | Step 5 — complete template with all sections |
-| `references/tooling.md` | Steps 2, 3, 3b — tooling discovery, fixture criteria, mutation gate, mixed-technology projects |
-| `references/stacks/<language>-<framework>.md` | Steps 2, 3, 3b — language-specific install, lint wrapper, fixtures, stubs, mutation tool |
-| `references/stacks/python-pytest/fixture-patterns.md` | Step 3 (conftest), Step 3b (test writing) — Python/pytest fixture templates by behavioral pattern, interaction rules |
-| `references/stacks/infra.md` | Steps 2, 3, 3b — when any task creates Dockerfile/compose/Terraform/k8s files |
-| `references/writing-guide.md` | Steps 3b, 5 — test correctness, stub design, task scope, deferred/service-gated guidance |
-| `scripts/lint-ruff-wrapper.sh` | Step 3, Python/ruff — copy to tasks folder, update `RUFF_BIN` |
-| `scripts/infra-lint-wrapper-template.sh` | Step 3, infra tasks — copy to tasks folder as `infra-lint.sh`, set `RUFF_BIN` if needed |
-| `scripts/docker-smoke-test-template.sh` | Step 3b, Docker tasks — copy per service, set `COMPOSE_FILE` and `HEALTH_URL` |
+| `references/tooling.md` | Steps 2, 3, 3b — tooling discovery, fixture criteria, mutation gate |
+| `references/stacks/<language>-<framework>.md` | Steps 2, 3, 3b — language-specific tooling |
+| `references/stacks/python-pytest/fixture-patterns.md` | Step 3 (conftest), Step 3b (test writing) — fixture templates, interaction rules |
+| `references/stacks/infra.md` | Steps 2, 3, 3b — Docker/compose/Terraform tooling |
+| `references/writing-guide.md` | Steps 3b, 5 — test correctness, stub design, task scope |
+| `scripts/lint-ruff-wrapper.sh` | Step 3, Python/ruff — copy to tasks folder |
+| `scripts/infra-lint-wrapper-template.sh` | Step 3, infra tasks — copy as `infra-lint.sh` |
+| `scripts/docker-smoke-test-template.sh` | Step 3b, Docker tasks — copy per service |
 | `scripts/run-tasks-template.sh` | Step 7 — copy verbatim, make two targeted edits |

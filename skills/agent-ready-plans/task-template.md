@@ -1,8 +1,8 @@
 # Task Document Template
 
-Every task file follows this structure. The goal: a small model should be able to implement the component by reading only this one file — no other context needed. The task describes *what* to build and *what it should do*, not the exact code to write.
+Every task file follows this structure. A small model should be able to implement the component by reading only this file plus the pre-written test file on disk.
 
-**Component tasks have no `## Files to Modify` or `## Wiring` section.** Component tasks create files only — they never touch shared orchestrating files (DAGs, registries, routers, dispatchers). Modifications to shared files are collected into dedicated wiring tasks that run after all components complete, and those wiring tasks are always deferred. See `references/writing-guide.md` § "Task Scope: Component Tasks vs Wiring Tasks".
+**Component tasks create files only — they never modify shared files** (DAGs, registries, routers). Modifications to shared files belong in dedicated wiring tasks. See `references/writing-guide.md` § "Task Scope".
 
 ---
 
@@ -35,7 +35,6 @@ explanations, test commands, suggestions, or any conversational text.
 ## Files to Create
 
 - `exact/path/from/project/root/module.py`
-- `exact/path/from/project/root/tests/test_module.py`
 
 ## Interface Contract
 
@@ -66,16 +65,10 @@ class ComponentName(BaseClass):
 
 ## Tests
 
-> Pre-written by Claude Code. **Do not modify this file.** Your implementation must make
-> these tests pass without changing them.
+> Pre-written by Claude Code and validated against stubs. The test file already
+> exists on disk — **do not modify it**. Implement the code to make it pass.
 
-` ` `[language]
-# Complete test code authored by Claude Code during scaffold phase.
-# Tests were validated against a stub implementation:
-#   - Mutation gate passed (>80% mutation score)
-#   - All tests fail against the stub for the right reasons (NotImplementedError /
-#     wrong return value — not ImportError or fixture setup errors)
-` ` `
+**Test file:** `exact/path/from/project/root/tests/test_module.py`
 
 ## Dependencies
 
@@ -88,16 +81,15 @@ and which task created it.]
 ## Commit
 
 ` ` `bash
-git add exact/path/to/module.py exact/path/to/tests/test_module.py
+git add exact/path/to/module.py
 git commit -m "feat(scope): add component name"
 ` ` `
 
 ## Verification
 
 - [ ] `module.py` exists with `ComponentName` class matching interface contract
-- [ ] All tests in `## Tests` pass without modifying the test file
+- [ ] All tests in the test file pass without modifying the test file
 - [ ] Lint passes
-- [ ] Tests pass
 ```
 
 ---
@@ -127,7 +119,6 @@ Conventions: TDD, abstract base classes, snake_case files, PascalCase classes
 Testing constraints:
 - Airflow is NOT installed — conftest.py patches airflow.* into sys.modules at collection time
 - No real connections to external services in tests
-- Use in-memory SQLite fixtures for extractor tests
 
 Available conftest fixtures (use these instead of writing your own mocks):
 - `mock_drive_service` — pre-wired Google Drive API v3 mock with download support
@@ -142,34 +133,28 @@ explanations, test commands, suggestions, or any conversational text.
 
 ### Interface Contract
 
-This is the most important section. It defines the public API that downstream tasks depend on. The small model must implement a class/function matching these signatures exactly.
+Defines the public API downstream tasks depend on. Class/function names and method signatures must match exactly.
 
-**What to include:** Class name, inheritance, all public method signatures with type hints, class-level attributes, property definitions.
+**Include:** Class name, inheritance, all public method signatures with type hints, class-level attributes, property definitions.
 
-**What NOT to include:** Method bodies, private methods, import statements for standard library, internal implementation details.
+**Exclude:** Method bodies, private methods, standard library imports, implementation details.
 
 ### Behavior
 
-Each bullet becomes a test the model writes. Be specific enough that there's one correct answer, but don't prescribe the test code. The model chooses its own fixtures, mock patterns, and assertion style.
+Each bullet is a concrete requirement the implementation must satisfy. Be specific enough that there's one correct answer, but don't prescribe how to test it — tests are pre-written.
 
 ### Tests
 
-This section contains complete test code authored by Claude Code during the scaffold phase (Step 3b). It is not a placeholder — paste the actual validated test file here verbatim.
+This section references the pre-written test file by its on-disk path. The test file was written by Claude Code during Step 3b and validated through the Three-Layer Validation Gate (lint, mutation, correct failure mode). It is the single source of truth.
 
-The test code was validated before task doc generation:
-- **Mutation gate passed** (>80% mutation score against the stub)
-- **All tests fail for the right reasons** against the stub (wrong return value / NotImplementedError — not import errors or fixture problems)
-
-The small model must not modify this section. Its only job is to write the implementation that makes these tests pass.
+The small model reads the test file directly from disk. The task doc does not embed a copy — embedding creates a second source of truth that can diverge from the validated file. The model implements the code to make the on-disk tests pass.
 
 ### Dependencies
 
 Tells the model what it can import from prior tasks. Include exact import paths — the model uses these verbatim.
 
-### Why there is no Wiring or Files to Modify section
+### Why there is no Files to Modify section
 
-Component tasks do not wire themselves into shared files. Adding a new extractor to a DAG, registering a handler in a router, or appending to a registry are all modifications to shared orchestrating files — and shared file modifications belong exclusively in dedicated wiring tasks that run after all components are complete.
+Component tasks do not wire themselves into shared files. Adding an extractor to a DAG, registering a handler in a router, or appending to a registry all modify shared orchestrating files — these belong exclusively in dedicated wiring tasks that run after all components are complete.
 
-This prevents cascade failures: if wiring is inline with a component task, and the shared file's test is part of that task's gate, then a broken shared file fails every subsequent component task regardless of whether those components are individually correct. Separating wiring into its own deferred phase means each component is tested in complete isolation, and the wiring task is the only task that can affect shared-file test results.
-
-If you find yourself writing a `## Files to Modify` or `## Wiring` section in a component task doc, stop — that content belongs in a deferred wiring task instead.
+This prevents cascade failures: a broken shared file in a component task would fail every subsequent component's test gate, even when those components are individually correct.
