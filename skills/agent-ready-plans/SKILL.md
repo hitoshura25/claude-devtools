@@ -72,7 +72,7 @@ If infrastructure tasks are present:
 - Copy `scripts/infra-lint-wrapper-template.sh` → `infra-lint.sh`
 - For each Docker/compose task, copy `scripts/docker-smoke-test-template.sh` and configure `COMPOSE_FILE` and `HEALTH_URL`
 - Write the self-contained test compose file (see `stacks/infra.md` § "The Two-Compose Pattern")
-- **Verify base images and build the Dockerfile** (see `stacks/infra.md` § "Base Image Verification"). Run `docker manifest inspect` on every `FROM` tag, then `docker build` against stubs. Fix failures before proceeding.
+- **Write and verify the Dockerfile as scaffold** (see `stacks/infra.md` § "Dockerfile as Scaffold"). Verify base image tags via `docker manifest inspect`, write the Dockerfile, build it, pin versions via `pip freeze`, rebuild, run hadolint. The validated Dockerfile stays on disk — the small model only creates compose files.
 
 **Conftest fixtures (Python/pytest):** Read `references/stacks/python-pytest/fixture-patterns.md`. For each external dependency, pick the appropriate pattern (capture mock, client mock, or stateful fake), copy the template, and adjust patch paths. Follow the fixture interaction rules.
 
@@ -102,12 +102,10 @@ Read `references/writing-guide.md` § "Writing Correct Tests" for the full rules
 
 **For infrastructure tasks:**
 
-1. Verify base image tags via `docker manifest inspect`
-2. Build the Dockerfile via `docker build` against stubs — fix any failures
-3. Run hadolint — confirm zero errors
-4. Confirm the smoke test script is configured correctly
-5. Run the smoke test; confirm it fails appropriately against stubs (health timeout, not build failure)
-6. Clean up: `docker rmi test-build-verify 2>/dev/null || true`
+1. Verify the Dockerfile is on disk (created in Step 3 as scaffold) and passes hadolint
+2. Confirm the smoke test script is configured correctly
+3. Run the smoke test; confirm it fails appropriately against stubs (health timeout, not build failure)
+4. Clean up the test build image: `docker rmi test-build-verify 2>/dev/null || true`
 
 **Record validation results in the manifest** (Step 6): service tasks get `"pre_validated": true` and `"test_file"`. Infrastructure tasks get `"pre_validated": true` but no `"test_file"`.
 
@@ -127,7 +125,7 @@ Key principles:
 - **Interface contracts, not implementation code** (for service tasks).
 - **Tests are referenced by path, not embedded.** The `## Tests` section points to the on-disk test file path — it does not contain a copy of the test code. This eliminates divergence between the validated test and what the model reads. See `task-template.md` § "Tests" for the format.
 - **Component tasks create files only — never modify shared files.** See `references/writing-guide.md` § "Task Scope".
-- **Infrastructure tasks:** The model creates Dockerfiles and compose files. Claude Code has already written the smoke test script. The task doc describes what to create; it does not embed the script.
+- **Infrastructure tasks:** The Dockerfile is scaffold (already on disk). The model creates only the compose files. Claude Code has already written the smoke test script. The task doc describes what compose files to create; it does not embed the smoke test script.
 
 **Deferred vs service-gated:** See `references/writing-guide.md` § "Deferred Tasks vs Service-Gated Tasks".
 
@@ -167,7 +165,6 @@ Create `00-manifest.json`. The `tooling` block holds global defaults. Tasks can 
       "title": "Docker Deployment",
       "phase": "Deployment",
       "files_created": [
-        "services/my-service/Dockerfile",
         "services/my-service/deployment/service.compose.yml",
         "services/my-service/deployment/service.test.compose.yml"
       ],
@@ -175,7 +172,7 @@ Create `00-manifest.json`. The `tooling` block holds global defaults. Tasks can 
       "lint_cmd": "docs/plans/my-tasks/infra-lint.sh",
       "test_command": "bash docs/plans/my-tasks/smoke-test-my-service.sh",
       "pre_validated": true,
-      "estimated_complexity": "moderate",
+      "estimated_complexity": "simple",
       "depends_on": ["6.1"]
     },
     {

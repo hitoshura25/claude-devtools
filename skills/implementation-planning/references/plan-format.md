@@ -81,14 +81,16 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 ### Task N+1.1: [Service Name] Docker Deployment
 
+**Scaffold (created by Claude Code):**
+- `services/my-service/Dockerfile` — Claude Code writes, builds, pins versions, and validates with hadolint before the run starts. The Dockerfile is scaffold, not a task deliverable.
+
 **Files:**
-- Create: `services/my-service/Dockerfile`
 - Create: `services/my-service/deployment/service.compose.yml`
 - Create: `services/my-service/deployment/service.test.compose.yml`
 
 **Behavior:**
-- [Base image family and language version requirement — e.g. "Apache Airflow with Python 3.11". Do NOT specify an exact tag here; Claude Code verifies the actual tag via `docker manifest inspect` during task-doc authoring and writes the verified tag into the task doc's Dockerfile spec.]
-- [Installed dependencies, entrypoint command]
+- [Base image family and language version requirement — e.g. "Apache Airflow with Python 3.11". Do NOT specify an exact tag here; Claude Code resolves the actual tag via `docker manifest inspect` during scaffold.]
+- [Installed dependencies — Claude Code pins exact versions via `pip freeze` during scaffold]
 - [Environment variables the container reads]
 - [Port the service listens on and health check endpoint]
 - Production compose (`service.compose.yml`) connects to the shared platform network and assumes dependencies (MinIO, RabbitMQ, etc.) are pre-running
@@ -253,7 +255,7 @@ Deployment tasks (Phase 7) have a different test shape from component and wiring
 - [smoke_test]: Container builds successfully; service starts; health endpoint returns HTTP 200 within timeout
 ```
 
-Claude Code writes a smoke test script (from a template) during Step 3b. Before writing the task doc, Claude Code also verifies the base image tag via `docker manifest inspect` and confirms the Dockerfile builds via `docker build` (see `agent-ready-plans` SKILL.md Step 3b and `stacks/infra.md` § "Base Image Verification"). The small model's job is to produce a Dockerfile and compose files that make the smoke test pass. The test compose must be self-contained — no external services required.
+Claude Code writes a smoke test script (from a template) during Step 3b. The Dockerfile is scaffold — Claude Code writes, builds, pins versions, and validates it with hadolint during Step 3 (see `stacks/infra.md` § "Dockerfile as Scaffold"). The small model's job is to produce compose files that make the smoke test pass. The test compose must be self-contained — no external services required.
 
 ### Wiring Task Test Scenarios
 
@@ -330,15 +332,15 @@ A wiring task:
 
 **Phase 7 — Deployment — packages the service into a container and validates it runs.** Each deployment task creates two compose files: a production compose (connecting to the shared platform network, assuming dependencies are pre-running) and a self-contained test compose (bundling all dependencies as local services so the smoke test needs only Docker installed). Claude Code writes the smoke test script; the small model writes the Dockerfile and compose files. Deployment tasks are always sequenced after the wiring task they depend on — this ensures the container packages known-good code.
 
-The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. Claude Code resolves and verifies the actual tag during task-doc authoring via `docker manifest inspect`, then builds the Dockerfile against stubs to confirm it works before writing the spec into the task doc. This prevents the small model from receiving a broken Dockerfile it cannot fix.
+The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. Claude Code resolves the tag, writes the Dockerfile, pins dependency versions via `pip freeze`, validates with hadolint, and keeps the Dockerfile on disk as scaffold. The small model never touches the Dockerfile — it only writes compose files.
 
 A deployment task:
-- Creates `Dockerfile`, `service.compose.yml`, and `service.test.compose.yml`
+- The Dockerfile is scaffold (created by Claude Code, already on disk and validated)
+- The model creates `service.compose.yml` and `service.test.compose.yml`
 - Has no `Interface:` block — infrastructure files have no API surface to specify
 - Has a `[smoke_test]` scenario: container starts, health endpoint returns 200
 - Uses a per-task `lint_cmd` (hadolint + compose config) rather than the global language linter
 - Uses a Docker smoke test script as `test_command` rather than a unit test runner
-- The Dockerfile spec in the task doc has been verified to build by Claude Code — if the smoke test fails during the run, the failure is in the model's implementation, not the spec
 
 **Phase 8 — Integration Tests — is service-gated, not deferred.** Integration test task docs are written upfront alongside all other tasks, because what they must test (end-to-end data flow, deduplication behavior, service interactions) is fully knowable from the design doc and interface contracts — no runtime discovery is needed. They are **not** deferred. The distinction is in how the runner handles them at execution time: the runner checks whether required services (e.g. MinIO, RabbitMQ, a database) are reachable before executing the task. If services are unavailable, the run **fails with an error** — it does not skip. This ensures every run produces a complete, verified result. Start required services before running the task suite, or resume with `--start N` after starting them.
 

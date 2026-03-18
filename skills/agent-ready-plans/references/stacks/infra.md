@@ -91,13 +91,16 @@ Test it from the project root before recording in the manifest:
 
 ---
 
-## Base Image Verification (Step 3)
+## Dockerfile as Scaffold (Step 3)
 
-Before writing a Dockerfile spec into a task doc, verify that every base image
-tag actually exists and that the Dockerfile builds successfully. Fabricated or
-imprecise tags (e.g. `apache/airflow:2.9-python3.11` when the real tag is
-`2.9.0-python3.11`) cause the small model to spiral — it cannot fix a spec
-error it was told to follow.
+The Dockerfile is scaffold — Claude Code writes it, validates it, and keeps
+it on disk. The small model never touches it. This eliminates an entire class
+of trial failures (T21, T22, T25, T26) where the model tried to recreate a
+Dockerfile from a spec and hit wrong image tags, fabricated versions, or
+hadolint spirals.
+
+The rationale is the same as for test files: Claude Code does the verification
+work, and the validated artifact stays on disk as the single source of truth.
 
 ### Step 1: Verify the tag exists
 
@@ -178,9 +181,9 @@ Rebuild with pinned versions to confirm:
 docker build -t test-build-verify .
 ```
 
-The build must succeed with pinned versions before the Dockerfile spec is embedded
-in the task doc. A build failure at authoring time is cheap — a build failure during
-the small model's run wastes all its reflection budget on a problem it cannot fix.
+The build must succeed with pinned versions. A build failure at authoring time
+is cheap — a build failure during the small model's run wastes all its reflection
+budget on a problem it cannot fix.
 
 ### Step 3: Run hadolint
 
@@ -188,21 +191,22 @@ the small model's run wastes all its reflection budget on a problem it cannot fi
 hadolint services/my-service/Dockerfile
 ```
 
-Fix any warnings. The Dockerfile that gets embedded in the task doc must pass
-hadolint with **zero warnings** — including DL3013 (pin versions). Because
-versions were pinned in Step 2, DL3013 should not fire.
+Fix any warnings. The Dockerfile must pass hadolint with **zero warnings**
+— including DL3013 (pin versions). Because versions were pinned in Step 2,
+DL3013 should not fire.
 
-### Step 4: Clean up
+### Step 4: Clean up the build image
 
-Remove the test image after verification:
+Remove the test build image (but keep the Dockerfile on disk):
 
 ```bash
 docker rmi test-build-verify 2>/dev/null || true
 ```
 
-Record the verified Dockerfile spec in the task doc. The spec the small model
-receives has pinned versions proven to build on the target base image — any
-smoke test failure is now the model's implementation issue, not an authoring error.
+The verified Dockerfile stays in the service directory as scaffold. It has
+pinned versions proven to build on the target base image. The deployment
+task doc tells the model the Dockerfile already exists and instructs it to
+create only the compose files.
 
 ---
 
@@ -335,7 +339,6 @@ for the right reason against the stub (build failure or health endpoint timeout)
   "title": "Docker Deployment",
   "phase": "Deployment",
   "files_created": [
-    "services/my-service/Dockerfile",
     "services/my-service/deployment/service.compose.yml",
     "services/my-service/deployment/service.test.compose.yml"
   ],
@@ -343,7 +346,7 @@ for the right reason against the stub (build failure or health endpoint timeout)
   "lint_cmd": "docs/plans/my-tasks/infra-lint.sh",
   "test_command": "bash docs/plans/my-tasks/smoke-test-my-service.sh",
   "pre_validated": true,
-  "estimated_complexity": "moderate",
+  "estimated_complexity": "simple",
   "depends_on": ["7.1"]
 }
 ```
@@ -356,16 +359,15 @@ script works (and fails appropriately against stubs) before marking it true.
 
 ## What the Small Model Must Produce
 
-The small model's job for an infrastructure task is:
+The small model's job for a deployment task is:
 
-1. A working `Dockerfile` that passes hadolint with zero errors
-2. A production `service.compose.yml` that passes `docker compose config`
-3. A self-contained `service.test.compose.yml` that passes `docker compose config`
+1. A production `service.compose.yml` that passes `docker compose config`
+2. A self-contained `service.test.compose.yml` that passes `docker compose config`
    AND allows `docker compose up --wait` to succeed with the service healthy
 
+The model does NOT write the Dockerfile — that's scaffold, already on disk.
 The model does NOT write the smoke test script — Claude Code writes that in Step 3b.
-The model also does NOT modify the smoke test script. The model's output is the
-infrastructure files; the smoke test validates them.
+The model's output is the two compose files; the smoke test validates them.
 
 ---
 
