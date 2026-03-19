@@ -32,13 +32,39 @@ This rule applies only to **wiring task Behavior sections**. Component tasks use
 
 **Interface contracts, not implementation code.** For component tasks: define class/function names, signatures with type annotations, and behavioral specs. No method bodies.
 
-**Tests are on disk, not in the task doc.** Claude Code writes and validates test files during Step 3b and saves them to disk. Task docs reference the test file by path — they do not embed a copy. This eliminates the divergence risk where a validated on-disk test and the embedded copy in the task doc differ due to LLM non-determinism at generation time (see T23, T24, T27 pattern).
+**Tests are on disk, not in the task doc.** Claude Code writes and validates test files during Step 3b and saves them to disk. Task docs reference the test file by path — they do not embed a copy. Embedding creates a second source of truth that can diverge from the validated file due to LLM non-determinism at generation time.
 
 **Environment constraints over mock instructions.** State what's mocked and what can't make real connections. Tests already handle mock wiring.
 
 **Minimize context requirements.** Include the interface of dependencies in the task doc (class name, key method signatures, import path) so the model doesn't need to read other files.
 
 **Keep task docs under 2000 tokens.** Small model context windows are limited. Removing embedded test code helps significantly here.
+
+**Break long literals across lines in Behavior sections.** Any string literal or nested dict that could exceed the project line-length limit (typically 88 chars) must be shown in multi-line form in the task doc's Behavior section. The model copies whatever form it reads. Single-line forms that look short may exceed the limit once variable names, indentation, and closing punctuation are added. This applies to SQL queries, Avro/JSON schemas, format strings with interpolations, and nested dict literals. Show them broken across lines; the model will copy the form.
+
+```python
+# WRONG — single-line schema exceeds 88 chars after indentation:
+avro_schema = {"type": "record", "name": "StepsRecord", "fields": [{"name": "count", "type": "int"}, {"name": "startTime", "type": {"type": "record", "name": "Time", "fields": [{"name": "epochMillis", "type": "long"}]}}]}
+
+# CORRECT — multi-line form the model can copy safely:
+avro_schema = {
+    "type": "record",
+    "name": "StepsRecord",
+    "fields": [
+        {"name": "count", "type": "int"},
+        {
+            "name": "startTime",
+            "type": {
+                "type": "record",
+                "name": "Time",
+                "fields": [{"name": "epochMillis", "type": "long"}],
+            },
+        },
+    ],
+}
+```
+
+This is the same principle as the SQL constants pattern (module-level constants for SQL strings) and the wiring callable body snippets rule (show the code, let the model copy it). All three target the same root cause: the model transcribes whatever form it reads, and single-line forms reliably trigger E501 lint spirals.
 
 **Always include the output constraint.** Small models often append conversational text after code. Every task's Project Context section must end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.`
 

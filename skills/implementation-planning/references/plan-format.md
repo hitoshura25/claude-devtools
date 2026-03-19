@@ -82,11 +82,11 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 ### Task N+1.1: [Service Name] Docker Deployment
 
 **Scaffold (created by Claude Code):**
-- `services/my-service/Dockerfile` — Claude Code writes, builds, pins versions, and validates with hadolint before the run starts. The Dockerfile is scaffold, not a task deliverable.
+- `services/my-service/Dockerfile` — Claude Code writes, builds, pins versions, and validates with hadolint
+- `services/my-service/deployment/service.test.compose.yml` — Claude Code writes and verifies the full stack starts healthy via `docker compose up --wait`
 
 **Files:**
 - Create: `services/my-service/deployment/service.compose.yml`
-- Create: `services/my-service/deployment/service.test.compose.yml`
 
 **Behavior:**
 - [Base image family and language version requirement — e.g. "Apache Airflow with Python 3.11". Do NOT specify an exact tag here; Claude Code resolves the actual tag via `docker manifest inspect` during scaffold.]
@@ -94,7 +94,6 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 - [Environment variables the container reads]
 - [Port the service listens on and health check endpoint]
 - Production compose (`service.compose.yml`) connects to the shared platform network and assumes dependencies (MinIO, RabbitMQ, etc.) are pre-running
-- Test compose (`service.test.compose.yml`) is fully self-contained: includes the service AND all dependencies it needs as local services on a local bridge network — no external services required to run the smoke test
 
 **Test scenarios:**
 - [smoke_test]: Container builds and starts; health endpoint returns HTTP 200 within timeout
@@ -332,11 +331,11 @@ A wiring task:
 
 **Phase 7 — Deployment — packages the service into a container and validates it runs.** Each deployment task creates two compose files: a production compose (connecting to the shared platform network, assuming dependencies are pre-running) and a self-contained test compose (bundling all dependencies as local services so the smoke test needs only Docker installed). Claude Code writes the smoke test script; the small model writes the Dockerfile and compose files. Deployment tasks are always sequenced after the wiring task they depend on — this ensures the container packages known-good code.
 
-The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. Claude Code resolves the tag, writes the Dockerfile, pins dependency versions via `pip freeze`, validates with hadolint, and keeps the Dockerfile on disk as scaffold. The small model never touches the Dockerfile — it only writes compose files.
+The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. Claude Code resolves the tag, writes the Dockerfile, pins dependency versions via `pip freeze`, validates with hadolint, writes the test compose, and verifies the full stack starts healthy. Both stay on disk as scaffold. The small model only writes the production compose file.
 
 A deployment task:
-- The Dockerfile is scaffold (created by Claude Code, already on disk and validated)
-- The model creates `service.compose.yml` and `service.test.compose.yml`
+- The Dockerfile and test compose are scaffold (created by Claude Code, already on disk and validated)
+- The model creates only `service.compose.yml`
 - Has no `Interface:` block — infrastructure files have no API surface to specify
 - Has a `[smoke_test]` scenario: container starts, health endpoint returns 200
 - Uses a per-task `lint_cmd` (hadolint + compose config) rather than the global language linter

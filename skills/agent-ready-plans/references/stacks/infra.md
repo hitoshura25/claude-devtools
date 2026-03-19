@@ -91,16 +91,20 @@ Test it from the project root before recording in the manifest:
 
 ---
 
-## Dockerfile as Scaffold (Step 3)
+## Dockerfile and Test Compose as Scaffold (Step 3)
 
-The Dockerfile is scaffold — Claude Code writes it, validates it, and keeps
-it on disk. The small model never touches it. This eliminates an entire class
-of trial failures (T21, T22, T25, T26) where the model tried to recreate a
-Dockerfile from a spec and hit wrong image tags, fabricated versions, or
-hadolint spirals.
+The Dockerfile and the test compose file are both scaffold — Claude Code writes
+them, validates them, and keeps them on disk. The small model only creates the
+production compose file.
 
-The rationale is the same as for test files: Claude Code does the verification
-work, and the validated artifact stays on disk as the single source of truth.
+Small models cannot debug infrastructure authoring errors — wrong image tags,
+fabricated version numbers, hadolint violations, or missing environment variables
+all consume the model's entire reflection budget on problems it cannot fix. By
+validating the Dockerfile and test compose during scaffold, these errors are
+caught at authoring time (when they're cheap to fix) rather than at run time
+(when they're fatal). Both follow the same principle as test files: Claude Code
+does the verification work, and the validated artifact stays on disk as the
+single source of truth.
 
 ### Step 1: Verify the tag exists
 
@@ -195,18 +199,41 @@ Fix any warnings. The Dockerfile must pass hadolint with **zero warnings**
 — including DL3013 (pin versions). Because versions were pinned in Step 2,
 DL3013 should not fire.
 
-### Step 4: Clean up the build image
+### Step 4: Write the test compose and verify the stack starts
 
-Remove the test build image (but keep the Dockerfile on disk):
+With the Dockerfile verified, write the test compose file
+(`service.test.compose.yml`) following the Two-Compose Pattern below. Then
+verify the full stack starts successfully:
 
 ```bash
+docker compose -f services/my-service/deployment/service.test.compose.yml up -d --wait --wait-timeout 120
+```
+
+If any container exits or fails its healthcheck, inspect the logs:
+
+```bash
+docker compose -f services/my-service/deployment/service.test.compose.yml logs
+```
+
+Common failures at this stage:
+- **Missing env vars**: The service crashes on startup because a required
+  configuration variable is missing from the compose environment block.
+  Check the service's Settings class for all required fields and add them.
+- **Wrong entrypoint**: The CMD doesn't match the base image's expectations.
+  Check the base image docs for the correct startup command.
+- **Port conflicts**: A port binding collides with a running host service.
+  Change the host port in the compose file.
+
+Fix any issues and re-run until all services start healthy. Then tear down:
+
+```bash
+docker compose -f services/my-service/deployment/service.test.compose.yml down -v --remove-orphans
 docker rmi test-build-verify 2>/dev/null || true
 ```
 
-The verified Dockerfile stays in the service directory as scaffold. It has
-pinned versions proven to build on the target base image. The deployment
-task doc tells the model the Dockerfile already exists and instructs it to
-create only the compose files.
+Both the Dockerfile and the test compose stay on disk as scaffold. The deployment
+task doc tells the model they already exist and instructs it to create only the
+production compose file.
 
 ---
 
@@ -312,25 +339,24 @@ COMPOSE_FILE="services/my-service/deployment/service.test.compose.yml"
 HEALTH_URL="http://localhost:8080/health"
 ```
 
-### Validate the smoke test before embedding in the task doc
+### Validate the smoke test script
 
-Run it from the project root to confirm it works with the stub implementation:
+The test compose is already validated (Step 3, Step 4 confirmed the stack starts).
+Run the smoke test script to confirm it wires correctly to the compose file:
 
 ```bash
 bash docs/plans/my-tasks/smoke-test-my-service.sh
 ```
 
-The expected outcome against stubs: the Dockerfile may not build correctly yet
-(missing Python packages, missing files), which is fine — the smoke test failing
-against stubs means it will catch the model's implementation. If the stub
-Dockerfile happens to build, the health endpoint won't respond (the service isn't
-implemented), so the timeout will fire and the test will fail. Either failure mode
-is correct.
+The expected outcome against stubs: the Docker image builds (Dockerfile is scaffold
+with real deps), the stack starts, but the health endpoint won't respond because
+the service code isn't implemented yet. The smoke test should fail on health
+timeout — not on build failure or container crash. This confirms the smoke test
+script, Dockerfile, and test compose are all correctly wired.
 
-Mark `"pre_validated": true` in the manifest once you've confirmed the test fails
-for the right reason against the stub (build failure or health endpoint timeout).
+Mark `"pre_validated": true` in the manifest.
 
-### Manifest entry for an infrastructure task
+### Manifest entry for a deployment task
 
 ```json
 {
@@ -339,8 +365,7 @@ for the right reason against the stub (build failure or health endpoint timeout)
   "title": "Docker Deployment",
   "phase": "Deployment",
   "files_created": [
-    "services/my-service/deployment/service.compose.yml",
-    "services/my-service/deployment/service.test.compose.yml"
+    "services/my-service/deployment/service.compose.yml"
   ],
   "files_modified": [],
   "lint_cmd": "docs/plans/my-tasks/infra-lint.sh",
@@ -362,12 +387,11 @@ script works (and fails appropriately against stubs) before marking it true.
 The small model's job for a deployment task is:
 
 1. A production `service.compose.yml` that passes `docker compose config`
-2. A self-contained `service.test.compose.yml` that passes `docker compose config`
-   AND allows `docker compose up --wait` to succeed with the service healthy
 
 The model does NOT write the Dockerfile — that's scaffold, already on disk.
+The model does NOT write the test compose — that's also scaffold.
 The model does NOT write the smoke test script — Claude Code writes that in Step 3b.
-The model's output is the two compose files; the smoke test validates them.
+The model's only output is the production compose file.
 
 ---
 
