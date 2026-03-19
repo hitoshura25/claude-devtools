@@ -233,28 +233,29 @@ file systems, test doubles with real logic.
 
 ```python
 @pytest.fixture
-def <component>(tmp_path):
-    """Real <Component> backed by a temp-file store.
+def <component>():
+    """Real <Component> backed by :memory: SQLite.
 
-    Uses tmp_path (not :memory:) to avoid the multi-connection trap:
-    each sqlite3.connect(":memory:") creates an independent database.
-
-    If :memory: is needed for speed, the implementation MUST hold a
-    persistent self._conn — see python-pytest.md § "SQLite Trap Patterns".
+    Uses :memory: for speed and perfect isolation. This intentionally
+    enforces that the implementation holds a persistent self._conn —
+    opening a new connection per method creates an independent empty
+    database, which will fail immediately.
     """
-    instance = Component(str(tmp_path / "test.db"))
+    instance = Component(":memory:")
     yield instance
-    # Teardown — close connections if the component holds any
-    if hasattr(instance, "_conn"):
+    if hasattr(instance, "_conn") and instance._conn is not None:
         instance._conn.close()
 ```
 
 ### Rules for stateful fakes
 
-- **Prefer `tmp_path` over `:memory:`** for SQLite-backed components. File-backed
-  databases work correctly even if the implementation opens separate connections per
-  method. `:memory:` databases require a persistent connection — if you use `:memory:`,
-  the task doc's Behavior section MUST include the persistent connection instruction.
+- **Always use `:memory:` for SQLite-backed fixtures.** This is the standard best
+  practice — faster than file-backed (no disk I/O), perfect isolation (each test
+  gets an independent database), and automatic cleanup. It also enforces correct
+  implementation: the class must hold a persistent `self._conn` because each
+  `sqlite3.connect(":memory:")` call creates an independent empty database.
+  Do not use `tmp_path` for SQLite fixtures — file-backed databases mask the
+  multi-connection bug, allowing incorrect implementations to pass tests.
 - **Tear down resources** in the fixture (close connections, delete temp files).
 - **Do not share stateful fakes across tests** — each test gets a fresh instance.
 
@@ -301,8 +302,8 @@ unless explicitly set. Do not assert on return values without setting them first
 ### Rule 3: Stateful fakes have real constraints
 
 When a test uses a **stateful fake** (Pattern 3), the fake's constraints apply.
-For `:memory:` SQLite: each new connection is a separate database. For `tmp_path`
-SQLite: the file persists across connections within the same test.
+For `:memory:` SQLite (the standard): each new connection is a separate database,
+which enforces that the implementation holds a persistent connection.
 
 ---
 

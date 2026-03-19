@@ -366,8 +366,8 @@ class UUIDStore:
 Add a test that exercises a schema-dependent method immediately after construction:
 
 ```python
-def test_schema_initialized_on_construction(tmp_path):
-    store = UUIDStore(str(tmp_path / "test.db"))
+def test_schema_initialized_on_construction():
+    store = UUIDStore(":memory:")
     store.mark_seen(["id-1"])  # must not raise "no such table"
 ```
 
@@ -381,7 +381,9 @@ Two SQLite traps consistently break small model implementations. Document both i
 
 Each `sqlite3.connect(":memory:")` creates a completely independent in-memory database. If the implementation opens a fresh connection per method call, `_init_schema()` creates the table in one DB and the next method call opens a fresh empty one — `no such table`.
 
-Fix: hold a persistent connection for the object's lifetime:
+**`:memory:` is the quality standard for SQLite test fixtures.** It is faster than file-backed (no disk I/O), provides perfect test isolation, and — critically — enforces correct implementation. A class that opens a new connection per method is genuinely wrong: it's slower in production, breaks transaction semantics across methods, and prevents WAL mode. The `:memory:` fixture catches this deficiency immediately rather than masking it.
+
+The correct implementation pattern:
 
 ```python
 class UUIDStore:
@@ -390,11 +392,11 @@ class UUIDStore:
         self._init_schema()
 ```
 
+**Do not use `tmp_path` for SQLite fixtures.** File-backed databases tolerate the multi-connection pattern (each `connect()` opens the same file), which masks the implementation bug. The tests pass but the code is wrong. The `:memory:` fixture is the enforcement mechanism — it makes the wrong pattern fail immediately.
+
 Task doc Behavior entry: *"Must hold a persistent `self._conn` connection opened in `__init__` — do not open a new connection per method call."*
 
-**Mandatory test-authoring rule (Step 3b):** If any test fixture passes `":memory:"` to a SQLite-backed class, the task doc's `## Behavior` section **must** include the persistent connection instruction shown above. This is not optional — the `:memory:` fixture and the Behavior warning are a matched pair. Writing a `:memory:` fixture without the corresponding Behavior entry causes the small model to open separate connections per method, which works for file-backed DBs but silently breaks for `:memory:`, producing a "no such table" error that consumes all reflection attempts.
-
-**Verification before embedding tests:** After writing a test file that uses a `:memory:` fixture, confirm the task doc's Behavior section contains the persistent connection rule. If it does not, add it before proceeding.
+The fixture template in `python-pytest/fixture-patterns.md` Pattern 3 (Stateful Fake) uses `:memory:` by default. Copy it as-is.
 
 ### Trap 2 — Multi-column row-value constructor in IN clause
 
