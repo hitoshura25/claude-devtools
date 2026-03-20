@@ -74,8 +74,20 @@ fi
 
 # ── Build and start ───────────────────────────────────────────
 echo "🐳 Building and starting services from $COMPOSE_FILE..."
+set +e
 docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" up -d --build \
   --wait --wait-timeout "$TIMEOUT_SECONDS" 2>&1
+WAIT_EXIT=$?
+set -e
+
+if [[ $WAIT_EXIT -ne 0 ]]; then
+  echo "❌ docker compose up --wait failed (exit $WAIT_EXIT)."
+  echo "   Container status:"
+  docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" ps -a 2>/dev/null || true
+  echo "   Container logs (last 80 lines per service):"
+  docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" logs --tail=80 2>/dev/null || true
+  exit 1
+fi
 
 echo "✅ All health checks passed per compose file declarations."
 
