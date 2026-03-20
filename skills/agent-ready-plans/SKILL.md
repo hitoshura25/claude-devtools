@@ -118,6 +118,8 @@ For each task (starting from Phase 2), generate a standalone markdown file. Read
 
 **Naming:** `NN-task-X.Y-short-description.md`
 
+**Ground Behavior sections in code, not plan prose.** Before writing each task doc's `## Behavior` section, read the test file you wrote in Step 3b and the relevant stub/scaffold files (base classes, config models, shared types). Derive behavioral details — field names, dict keys, output structures, data formats, constructor signatures — from what the tests actually assert on and what the scaffold code actually defines. The implementation plan provides decomposition and intent; the code you already wrote is the ground truth. If the plan says "same shape as TaskX", look up what the tests for TaskX assert and spell those details out explicitly. If the plan says "streams content", check whether your test writes binary bytes or parses JSON, and specify that format.
+
 Key principles:
 - **Self-contained.** Inline all relevant context.
 - **Explicit file paths** from project root.
