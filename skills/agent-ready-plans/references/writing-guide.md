@@ -6,6 +6,52 @@ Small models (7B-32B parameters) follow precise instructions well but struggle w
 
 **Be explicit, not clever.** Spell out every interface contract precisely. Instead of "follow the same pattern as the previous component", specify the exact class/function name, method signatures, and behavioral requirements.
 
+**Specify data formats for all I/O operations.** When a task's Behavior section describes downloading, reading, writing, or streaming data, it must state the exact data format and handling pattern. "Downloads content" or "streams to disk" is insufficient — the model will guess, and it will guess wrong. State whether the data is raw binary bytes, JSON text, CSV, a ZIP archive, an Avro file, etc., and how the model should handle it (write raw bytes to a file, parse as JSON, deserialize with a library, etc.).
+
+```
+# WRONG — format ambiguous, model may try to parse binary as JSON:
+- Downloads the export file to `local_path` via streaming API.
+
+# CORRECT — format and handling explicit:
+- Downloads the export file (a ZIP archive, raw binary bytes) and writes it
+  to `local_path` using binary file I/O. Do not attempt to parse or decode
+  the content — write the raw bytes directly.
+```
+
+This applies to any operation where the data format affects implementation: HTTP responses, file downloads, message payloads, database query results, serialized objects. If the test asserts on the raw content (e.g., `f.read() == b"..."` or `json.loads(body)`), the task doc must specify the format so the model handles it correctly.
+
+**No cross-task references in Behavior sections.** Each task doc must be fully self-contained. Phrases like "same shape as TaskX", "follows the same pattern as the previous extractor", or "identical to ComponentY's output" are prohibited. The model sees exactly one task doc at a time — it cannot look up another task's interface, output structure, or implementation details. Spell out every field name, dict key, conversion formula, and output structure inline, even if it repeats content from a sibling task doc.
+
+```
+# WRONG — model cannot resolve "same as" across task docs:
+- Same energy conversion (÷ 4184.0) and output shape as ActiveCaloriesExtractor.
+
+# CORRECT — full output structure inline:
+- Convert energy from joules to kilocalories: `energy_kcal = joules / 4184.0`.
+- Output each record as:
+      {
+          "energy": {"inKilocalories": <energy_kcal>},
+          "startTime": {"epochMillis": <start_time>},
+          "endTime": {"epochMillis": <end_time>},
+      }
+```
+
+This also applies to constructor calls and return types. If the task returns a project-specific dataclass or struct, show the exact construction with named fields:
+
+```
+# WRONG — model guesses at constructor kwargs:
+- Return an ExtractionResult with the extracted records and UUIDs.
+
+# CORRECT — exact constructor call:
+- Return:
+      ExtractionResult(
+          records=extracted_records,
+          uuids=extracted_uuids,
+      )
+  Do not pass any other keyword arguments — ExtractionResult accepts
+  only `records` (list[dict]) and `uuids` (list[str]).
+```
+
 **Show the base class call site for abstract methods.** The model only sees the abstract signature — not how the base class calls it. For every abstract method the task implements, include one line showing the concrete call:
 
 ```
