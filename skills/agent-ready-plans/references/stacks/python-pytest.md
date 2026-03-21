@@ -317,6 +317,57 @@ capture mock template in `python-pytest/fixture-patterns.md` handles this by cap
 assertion. Apply the same capture-mock pattern to any library where positional argument
 order is ambiguous (see `tooling.md` § "Positional Argument Traps").
 
+#### Avro Named Type Redefinition Trap — fastavro
+
+`fastavro.parse_schema` rejects schemas that define the same named record type more
+than once. This consistently traps small models when multiple fields share a nested
+record structure (e.g., `startTime` and `endTime` both containing an `epochMillis`
+field). The model defines the named type inline on both fields; fastavro raises:
+```
+SchemaParseException: redefined named type: <TypeName>
+```
+
+The correct Avro pattern is to define the named type inline on its *first* use,
+then reference it by name string on all subsequent uses:
+
+```python
+# WRONG — defines "Timestamp" twice, fastavro rejects it
+avro_schema = {
+    "type": "record",
+    "name": "MyRecord",
+    "fields": [
+        {"name": "startTime", "type": {
+            "type": "record", "name": "Timestamp",
+            "fields": [{"name": "epochMillis", "type": "long"}]
+        }},
+        {"name": "endTime", "type": {
+            "type": "record", "name": "Timestamp",
+            "fields": [{"name": "epochMillis", "type": "long"}]
+        }},
+    ],
+}
+
+# CORRECT — define inline first, then reference by name string
+avro_schema = {
+    "type": "record",
+    "name": "MyRecord",
+    "fields": [
+        {"name": "startTime", "type": {
+            "type": "record", "name": "Timestamp",
+            "fields": [{"name": "epochMillis", "type": "long"}]
+        }},
+        {"name": "endTime", "type": "Timestamp"},
+    ],
+}
+```
+
+Small models cannot diagnose this error — every reflection re-attempts the same
+duplicate definition pattern. The planning model must construct and validate
+the exact schema against `fastavro.parse_schema` during Step 3b, then include
+it verbatim in the task doc's Behavior section. This is an instance of the
+general rule in `writing-guide.md`: "Include validated schemas in Behavior
+sections when tests check schema parsing."
+
 #### sys.modules Mock Constructor Trap
 
 When a framework class is loaded from a `sys.modules` MagicMock entry (see

@@ -33,7 +33,7 @@ This rule applies only to **wiring task Behavior sections**. Component tasks use
 
 **Interface contracts, not implementation code.** For component tasks: define class/function names, signatures with type annotations, and behavioral specs. No method bodies.
 
-**Tests are on disk, not in the task doc.** Claude Code writes and validates test files during Step 3b and saves them to disk. Task docs reference the test file by path — they do not embed a copy. Embedding creates a second source of truth that can diverge from the validated file due to LLM non-determinism at generation time.
+**Tests are on disk, not in the task doc.** The planning model writes and validates test files during Step 3b and saves them to disk. Task docs reference the test file by path — they do not embed a copy. Embedding creates a second source of truth that can diverge from the validated file due to LLM non-determinism at generation time.
 
 **Environment constraints over mock instructions.** State what's mocked and what can't make real connections. Tests already handle mock wiring.
 
@@ -69,13 +69,15 @@ This is the same principle as the wiring callable body snippets rule (show the c
 
 **Always include the output constraint.** Small models often append conversational text after code. Every task's Project Context section must end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.`
 
+**Include validated schemas in Behavior sections when tests check schema parsing.** If a test validates schema structure (e.g., Avro `parse_schema`, JSON Schema validation, protobuf descriptor checks), the task doc must include the exact, validated schema in the Behavior section. The small model cannot reliably construct schemas that satisfy library-specific constraints (named type deduplication, required field ordering, type reference rules). The planning model must construct the correct schema during Step 3b, validate it against the parsing library, and include it verbatim. Without this, the small model invents a schema that may parse incorrectly, exhausts reflections on library-specific errors it cannot diagnose, and degrades. See the relevant `stacks/<language>.md` for library-specific schema traps.
+
 ---
 
 ## Task Scope: Component Tasks vs Wiring Tasks
 
 Getting this wrong causes cascade failures that block entire phases.
 
-**Component tasks create files only.** A component task produces one source file. Its test file already exists on disk (written by Claude Code in Step 3b). The component is independently testable in isolation — its `test_command` runs only its own test file.
+**Component tasks create files only.** A component task produces one source file. Its test file already exists on disk (written by the planning model in Step 3b). The component is independently testable in isolation — its `test_command` runs only its own test file.
 
 **Wiring tasks modify shared files only.** A wiring task registers components into an orchestrating file. It runs only after all component tasks it depends on are complete. Its test includes an `import_integrity` scenario that validates every class import against actual produced files.
 
@@ -90,7 +92,7 @@ Getting this wrong causes cascade failures that block entire phases.
 
 ## Writing Correct Tests
 
-Claude Code authors tests during Step 3b. Tests must be correct — both logically sound and mechanically robust. Incorrect tests are worse than no tests: the model passes them trivially or gets stuck in a failing loop it can't escape.
+The planning model authors tests during Step 3b. Tests must be correct — both logically sound and mechanically robust. Incorrect tests are worse than no tests: the model passes them trivially or gets stuck in a failing loop it can't escape.
 
 ### Three-Layer Validation Gate
 
@@ -201,4 +203,4 @@ If a task doc exceeds ~2000 tokens, split by responsibility (e.g., "create confi
 
 ## Adapting for Different Agents
 
-Task docs are agent-agnostic markdown. The same files work with aider + LMStudio, Claude Code, Codex CLI, or any agent with a message-file param. To add a new backend, change the runner script.
+Task docs are agent-agnostic markdown. The same files work with aider + LMStudio, Claude Code, Codex CLI, or any coding agent with a message-file param. To add a new backend, change the runner script.
