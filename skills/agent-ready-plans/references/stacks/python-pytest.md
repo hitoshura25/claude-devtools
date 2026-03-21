@@ -317,6 +317,66 @@ capture mock template in `python-pytest/fixture-patterns.md` handles this by cap
 assertion. Apply the same capture-mock pattern to any library where positional argument
 order is ambiguous (see `tooling.md` § "Positional Argument Traps").
 
+#### sys.modules Mock Constructor Trap
+
+When a framework class is loaded from a `sys.modules` MagicMock entry (see
+§ "Mocking Framework Modules" above), **constructor kwargs are silently discarded**.
+Calling `FrameworkClass(name="my_thing", enabled=False)` returns a new MagicMock
+whose `.name` and `.enabled` attributes are auto-generated MagicMocks — not the
+string and bool that were passed in. This is fundamental to how MagicMock works:
+`__call__` on a MagicMock records the call but does not wire kwargs onto the return
+value as attributes.
+
+This trap fires whenever:
+1. The framework is not installed (mocked via `sys.modules`)
+2. Code constructs a framework object with kwargs: `obj = FrameworkClass(attr="value")`
+3. Tests assert on those attributes: `assert obj.attr == "value"`
+
+The assertion fails because `obj.attr` is a MagicMock, not `"value"`.
+
+Small models cannot reason their way out of this. They see the correct constructor
+call, see the assertion fail, and spend all reflections trying aliases, re-imports,
+or `__all__` declarations — none of which address the root cause.
+
+**Fix in task docs (Step 5):** When a task constructs an object from a
+`sys.modules`-mocked class and tests assert on its attributes, the Behavior section
+must include explicit attribute assignments after the constructor. Show both the
+constructor AND the assignments as a single code block so the model copies them
+together:
+
+```python
+# Generic pattern — framework class loaded from sys.modules mock
+obj = FrameworkClass(
+    name="my_thing",
+    schedule="0 */6 * * *",
+    enabled=False,
+)
+# Required when framework is mocked via sys.modules:
+# MagicMock constructors discard kwargs — assign attributes explicitly
+# so tests asserting obj.name, obj.schedule, obj.enabled see real values.
+obj.name = "my_thing"
+obj.schedule = "0 */6 * * *"
+obj.enabled = False
+```
+
+Task doc Behavior entry:
+```
+- After constructing the framework object, explicitly assign every attribute
+  that tests will assert on. MagicMock constructors discard kwargs:
+      obj = FrameworkClass(name="my_thing", schedule="0 */6 * * *")
+      obj.name = "my_thing"
+      obj.schedule = "0 */6 * * *"
+  Without the explicit assignments, tests see MagicMock objects instead
+  of the expected values.
+```
+
+**Checkpoint for Claude Code (Step 3b / Step 5):** For every wiring task that
+constructs an object from a `sys.modules`-mocked framework, verify: does any test
+assert on an attribute of that object? If yes, the task doc MUST include explicit
+attribute assignments. This check applies to any framework mocked via `sys.modules`
+— orchestrators, task schedulers, web framework route decorators, ORM model
+definitions, etc.
+
 ---
 
 ## Mutation Testing — mutmut
@@ -427,3 +487,35 @@ Task doc Behavior entry: *"SQLite does not support multi-column IN clauses — u
 Include this note in the task doc whenever a query filters on two or more columns using `IN`.
 
 **Note:** the query string above should be assigned to a module-level constant per the SQL Constants Pattern above — do not inline it in the method body.
+
+---
+
+## Wiring Task Patterns (Python-specific)
+
+These patterns supplement the language-neutral wiring rules in `references/writing-guide.md`.
+
+### Import Integrity Test
+
+Every Python wiring task must include an `import_integrity` test that imports every
+class the wiring task uses and asserts each is not None. This is the Python
+implementation of the language-neutral rule in `writing-guide.md` § "Wiring Task Tests".
+
+**Test pattern:**
+
+```python
+from mypackage.components.widget import Widget
+from mypackage.components.gadget import Gadget
+# ... one import per component the wiring task references
+
+def test_import_integrity():
+    assert Widget is not None
+    assert Gadget is not None
+```
+
+**Layer 2 verification command:**
+
+```bash
+cd services/my-service && python -m pytest tests/test_orchestrator.py::test_import_integrity -x -q
+```
+
+If any import fails, a component task drifted — fix it before proceeding.

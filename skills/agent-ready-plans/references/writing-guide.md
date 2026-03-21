@@ -17,15 +17,16 @@ This applies to any abstract/interface pattern: parsers, handlers, strategies, v
 
 **Wiring task Behavior sections must use code snippets for all callable bodies — no prose.** Unconditional, no length judgement needed. Prose descriptions produce one-liner transcriptions that exceed line-length limits, triggering lint spirals that consume the model's reflection budget. Show the code; let the model copy it.
 
-```python
-# WRONG — prose leads to one-liner transcription:
-# "pulls the zip path from XCom and unzips it to a temp directory"
+```
+# WRONG — prose description that the model transcribes as a one-liner:
+# "fetches the artifact path from the previous step and extracts it"
 
-# CORRECT — show the exact code:
-zip_path = context["task_instance"].xcom_pull(
-    key="zip_path",
-    task_ids="download_zip",
+# CORRECT — show the exact callable body as code:
+artifact_path = get_upstream_output(
+    step_id="download",
+    key="artifact_path",
 )
+extract_archive(artifact_path, dest_dir)
 ```
 
 This rule applies only to **wiring task Behavior sections**. Component tasks use interface contracts and behavioral specs — the model writes the implementation to pass the pre-written tests.
@@ -42,18 +43,18 @@ This rule applies only to **wiring task Behavior sections**. Component tasks use
 
 **Break long literals across lines in Behavior sections.** Any string literal or nested dict that could exceed the project line-length limit (typically 88 chars) must be shown in multi-line form in the task doc's Behavior section. The model copies whatever form it reads. Single-line forms that look short may exceed the limit once variable names, indentation, and closing punctuation are added. This applies to SQL queries, Avro/JSON schemas, format strings with interpolations, and nested dict literals. Show them broken across lines; the model will copy the form.
 
-```python
-# WRONG — single-line schema exceeds 88 chars after indentation:
-avro_schema = {"type": "record", "name": "StepsRecord", "fields": [{"name": "count", "type": "int"}, {"name": "startTime", "type": {"type": "record", "name": "Time", "fields": [{"name": "epochMillis", "type": "long"}]}}]}
+```
+# WRONG — single-line literal exceeds line-length limit after indentation:
+config = {"type": "record", "name": "Measurement", "fields": [{"name": "value", "type": "float"}, {"name": "timestamp", "type": {"type": "record", "name": "Time", "fields": [{"name": "epochMillis", "type": "long"}]}}]}
 
 # CORRECT — multi-line form the model can copy safely:
-avro_schema = {
+config = {
     "type": "record",
-    "name": "StepsRecord",
+    "name": "Measurement",
     "fields": [
-        {"name": "count", "type": "int"},
+        {"name": "value", "type": "float"},
         {
-            "name": "startTime",
+            "name": "timestamp",
             "type": {
                 "type": "record",
                 "name": "Time",
@@ -64,7 +65,7 @@ avro_schema = {
 }
 ```
 
-This is the same principle as the SQL constants pattern (module-level constants for SQL strings) and the wiring callable body snippets rule (show the code, let the model copy it). All three target the same root cause: the model transcribes whatever form it reads, and single-line forms reliably trigger E501 lint spirals.
+This is the same principle as the wiring callable body snippets rule (show the code, let the model copy it). Both target the same root cause: the model transcribes whatever form it reads, and single-line forms reliably trigger lint spirals. See the relevant `stacks/<language>.md` for language-specific patterns (e.g., SQL constants pattern, string literal extraction).
 
 **Always include the output constraint.** Small models often append conversational text after code. Every task's Project Context section must end with: `**Output constraint:** Respond with ONLY the file changes. Do not include explanations, test commands, suggestions, or any conversational text.`
 
@@ -95,13 +96,7 @@ Claude Code authors tests during Step 3b. Tests must be correct — both logical
 
 Every test file must pass all three layers before being marked `"pre_validated": true` in the manifest.
 
-**Layer 0: Lint gate.** Run the project linter against the test file *before* running any tests. Fix all violations. A test file with lint errors traps the small model — it exhausts reflections trying to fix lint in a file it shouldn't edit. This is especially important for string literals: inline SQL, long argument lists, and schema definitions frequently exceed line-length limits.
-
-```bash
-# Python/ruff example:
-ruff check services/my-service/tests/test_my_component.py
-# Must return zero errors before proceeding to Layer 1
-```
+**Layer 0: Lint gate.** Run the project linter against the test file *before* running any tests. Fix all violations. A test file with lint errors traps the small model — it exhausts reflections trying to fix lint in a file it shouldn't edit. This is especially important for string literals: inline SQL, long argument lists, and schema definitions frequently exceed line-length limits. The linter must return zero errors before proceeding to Layer 1. See the relevant `stacks/<language>.md` file for the specific linter command.
 
 **Layer 1: Mutation gate.** Run a mutation testing tool against the stub + tests. Strengthen tests until mutation score ≥ 80%. See `tooling.md` § "Mutation Testing".
 
@@ -119,27 +114,13 @@ Wiring task tests run against actual produced source files, not stubs.
 
 **Layer 1 (mutation gate): skip.** Wiring logic isn't algorithmic enough for meaningful mutation testing.
 
-**Layer 2 (import integrity check): required.** Run the import integrity test against actual produced files:
+**Layer 2 (import integrity check): required.** Run the import integrity test against actual produced files. If any import fails, a component task drifted — fix it first.
 
-```bash
-cd services/my-service && uv run pytest tests/test_orchestrator.py::test_all_classes_importable -x -q
-```
-
-If any import fails, a component task drifted — fix it first.
-
-**The `import_integrity` scenario is mandatory for every wiring task.** It explicitly imports every class the wiring task uses and asserts each is not None. This catches model drift at the wiring step rather than letting hallucinated imports pass silently.
-
-```python
-from plugins.extractors.steps_extractor import StepsExtractor
-from plugins.extractors.blood_glucose_extractor import BloodGlucoseExtractor
-# ... one line per component
-
-def test_all_extractor_classes_importable():
-    assert StepsExtractor is not None
-    assert BloodGlucoseExtractor is not None
-```
+**The `import_integrity` scenario is mandatory for every wiring task.** It explicitly imports every class the wiring task uses and asserts each is not None. This catches model drift at the wiring step rather than letting hallucinated imports pass silently. See the relevant `stacks/<language>.md` file for the language-specific import integrity test pattern.
 
 Every wiring task doc must include: *"Do not import any class not listed here. Do not infer additional classes from file names or directory structure."*
+
+**Mock constructor attribute checkpoint.** If the wiring task constructs an object from a framework class that is mocked (because the framework is not installed in the dev environment), and any test asserts on attributes of that object, the task doc's Behavior section must include explicit attribute assignments after the constructor call. Mock constructors may silently discard kwargs — the small model cannot diagnose this within its reflection budget. See the relevant `stacks/<language>.md` for the mock-specific trap pattern and fix.
 
 **Wiring Behavior sections use code snippets unconditionally.** See Core Principles above for the rationale.
 
