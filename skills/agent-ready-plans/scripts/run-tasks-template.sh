@@ -139,6 +139,7 @@ echo ""
 
 SUCCEEDED=0
 DEGRADED=0
+STARTED_SERVICE_COMPOSE=""
 
 for TASK_FILE in "${TASK_FILES[@]}"; do
   BASENAME=$(basename "$TASK_FILE")
@@ -207,16 +208,48 @@ else:
 " 2>/dev/null || echo "CHECK_ERROR")
 
     if [[ "$SERVICE_CHECK_OUTPUT" != "OK" ]]; then
-      echo ""
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "❌  Required services unavailable: $BASENAME"
-      echo "   Requires: $REQUIRES_SERVICES"
-      echo "   Status:   $SERVICE_CHECK_OUTPUT"
-      echo ""
-      echo "   Start the required services, then resume with:"
-      echo "   ./run-tasks.sh --start $TASK_NUM"
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      exit 1
+      # Check if the manifest specifies a service_compose to start
+      SERVICE_COMPOSE=$(python3 -c "
+import json, sys
+m = json.load(open('$MANIFEST'))
+task = next((t for t in m.get('tasks', []) if t.get('file') == '$BASENAME'), None)
+if task:
+    print(task.get('service_compose', '') or '')
+else:
+    print('')
+" 2>/dev/null || echo "")
+
+      if [[ -n "$SERVICE_COMPOSE" && -f "$PROJECT_ROOT/$SERVICE_COMPOSE" ]]; then
+        echo "🐳  Starting services from $SERVICE_COMPOSE..."
+        set +e
+        docker compose -f "$PROJECT_ROOT/$SERVICE_COMPOSE" up -d --wait --wait-timeout 120 2>&1 | tee -a "$LOG_FILE"
+        COMPOSE_EXIT=$?
+        set -e
+
+        if [[ $COMPOSE_EXIT -ne 0 ]]; then
+          echo "❌  Failed to start services from $SERVICE_COMPOSE"
+          echo "   Container status:"
+          docker compose -f "$PROJECT_ROOT/$SERVICE_COMPOSE" ps -a 2>/dev/null || true
+          echo "   Container logs:"
+          docker compose -f "$PROJECT_ROOT/$SERVICE_COMPOSE" logs --tail=40 2>/dev/null || true
+          docker compose -f "$PROJECT_ROOT/$SERVICE_COMPOSE" down -v --remove-orphans 2>/dev/null || true
+          exit 1
+        fi
+
+        # Track that we started services so we can tear them down after the task
+        STARTED_SERVICE_COMPOSE="$SERVICE_COMPOSE"
+      else
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "❌  Required services unavailable: $BASENAME"
+        echo "   Requires: $REQUIRES_SERVICES"
+        echo "   Status:   $SERVICE_CHECK_OUTPUT"
+        echo ""
+        echo "   Start the required services, then resume with:"
+        echo "   ./run-tasks.sh --start $TASK_NUM"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        exit 1
+      fi
     fi
   fi
 
@@ -358,6 +391,13 @@ else:
     DEGRADED=$((DEGRADED + 1))
   else
     echo "✅  Completed: $BASENAME"
+  fi
+
+  # ── Tear down service compose if we started one ─────────
+  if [[ -n "$STARTED_SERVICE_COMPOSE" ]]; then
+    echo "🧹  Tearing down services from $STARTED_SERVICE_COMPOSE..."
+    docker compose -f "$PROJECT_ROOT/$STARTED_SERVICE_COMPOSE" down -v --remove-orphans 2>/dev/null || true
+    STARTED_SERVICE_COMPOSE=""
   fi
 
   SUCCEEDED=$((SUCCEEDED + 1))

@@ -237,89 +237,138 @@ production compose file.
 
 ---
 
-## The Two-Compose Pattern
+## The Three-Compose Pattern
 
-Infrastructure tasks in a monorepo typically deal with two different compose needs:
+Infrastructure tasks in a monorepo typically deal with three different compose needs.
+Splitting them into separate files avoids duplication and ensures consistent service
+configuration across smoke tests and integration tests.
+
+**Services compose** (`services.compose.yml`) — dependency services only (MinIO,
+RabbitMQ, Postgres, etc.) with healthchecks. No application container. Used by
+integration tests that run on the host via pytest, and included by the full test
+compose. This is the single source of truth for dependency service configuration.
+
+**Full test compose** (`service.test.compose.yml`) — includes the services compose
+and adds the application container. Used by the Docker smoke test to verify the
+complete containerized stack. Fully self-contained: requires only Docker.
 
 **Production compose** (`service.compose.yml`) — used for actual deployment.
-References the shared platform network (`external: true`), assumes MinIO,
-RabbitMQ, and other infrastructure services are already running elsewhere. This
-is what gets deployed to production.
+References the shared platform network (`external: true`), assumes dependency
+services are already running elsewhere. This is what gets deployed to production.
 
-**Test compose** (`service.test.compose.yml`) — used exclusively for the smoke
-test. Fully self-contained: includes the service under test AND all infrastructure
-it needs (MinIO, RabbitMQ, postgres, etc.) as local services on a local network.
-Requires only Docker — not a running shared stack.
+**Why three files?** Two problems are solved:
+1. The smoke test needs the full stack (app + dependencies) but must be hermetic.
+2. Integration tests need only the dependency services (they run pytest on the host, not inside a container).
 
-**Why two files?** The smoke test must be runnable without a pre-existing shared
-stack. If the test compose referenced external services, any developer would need
-to start the full platform just to test one service. By bundling dependencies
-into the test compose, the smoke test is hermetic: `docker compose up` brings
-everything it needs, `docker compose down -v` removes it completely.
+Without the split, you'd either duplicate MinIO/RabbitMQ configuration between
+two files (error-prone) or start the full app container when integration tests
+don't need it (wasteful and fragile). The services compose is the shared layer
+that both consumers reference.
 
-### Detecting when to apply the two-compose pattern
+### Detecting when to apply the three-compose pattern
 
-Apply it whenever the production compose file:
-- Declares `external: true` on any network, OR
-- References services not defined in that file (e.g. `minio:9000` but no minio service)
+Apply it whenever the plan has both:
+- A Docker deployment task (smoke test needs the full stack), AND
+- An integration test task with `requires_services` (needs live dependencies)
 
-When you detect this, the infrastructure task must create **both** files.
+If there's no integration test task, the two-file pattern (services + full test
+compose) still applies — the services compose is just inlined into the test compose.
 
-### Writing the test compose
+### Writing the services compose
 
-The test compose reuses the same service images the project already uses — look
-for existing compose files in the project to find the correct image tags and
-environment variables.
+The services compose contains only dependency services. It exposes ports to
+localhost so host-side tests can reach them. Reuse the same images and versions
+the project already uses.
 
 ```yaml
-# service.test.compose.yml — self-contained, for smoke testing only
-# DO NOT use this file for production deployment.
+# services.compose.yml — dependency services for testing
+# Used by: integration tests (directly), smoke test (via test compose include)
 
 services:
-  # The service under test
-  my-service:
-    build:
-      context: ../../services/my-service
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
     environment:
-      - MY_SERVICE_DEPENDENCY_URL=http://dependency:9000
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
     ports:
-      - "8080:8080"
-    depends_on:
-      dependency:
-        condition: service_healthy
+      - "9000:9000"
     networks:
       - test-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 6
 
-  # Local instance of a dependency — same image as used in production
-  dependency:
-    image: dependency-image:tag  # match the version from the production compose
+  rabbitmq:
+    image: rabbitmq:4-management
     environment:
-      - DEPENDENCY_ROOT_USER=testuser
-      - DEPENDENCY_ROOT_PASSWORD=testpass
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
     networks:
       - test-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
       timeout: 5s
       retries: 6
 
 networks:
   test-net:
-    # Local network — not external, fully owned by this test compose
     driver: bridge
 ```
 
-Key rules for the test compose:
+### Writing the full test compose
+
+The full test compose includes the services compose and adds the application
+container. Use the `include` directive (Docker Compose v2.20+) to avoid
+duplicating service definitions.
+
+```yaml
+# service.test.compose.yml — full stack for smoke testing
+# DO NOT use for production. Includes services.compose.yml for dependencies.
+
+include:
+  - services.compose.yml
+
+services:
+  my-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["my-service", "start"]
+    environment:
+      - MY_DEPENDENCY_ENDPOINT=minio:9000
+    ports:
+      - "8080:8080"
+    depends_on:
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+```
+
+Note: the `include` directive makes all services and networks from
+`services.compose.yml` available in the same compose project. The app
+container can reference `minio` and `rabbitmq` by name on the `test-net` network.
+
+Key rules for both compose files:
 - **No `external: true` networks** — the network must be local and self-managed
 - **Declare `healthcheck` on every service** — this lets `docker compose up --wait` block until the whole stack is ready
 - **Use `condition: service_healthy` in `depends_on`** — ensures dependency ordering is correct
-- **Give the service a port binding** — the smoke test script needs to reach it from the host
+- **Expose ports to localhost** on the services compose — integration tests run on the host and need to reach the services
 
 ---
 

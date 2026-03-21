@@ -71,7 +71,7 @@ If infrastructure tasks are present:
 - Install `hadolint` (see `stacks/infra.md` § "Tooling Setup")
 - Copy `scripts/infra-lint-wrapper-template.sh` → `infra-lint.sh`
 - For each Docker/compose task, copy `scripts/docker-smoke-test-template.sh` and configure `COMPOSE_FILE` and `HEALTH_URL`
-- **Write and verify the Dockerfile and test compose as scaffold** (see `stacks/infra.md` § "Dockerfile and Test Compose as Scaffold"). Verify base image tags, write the Dockerfile, build it, pin versions via `pip freeze`, rebuild, run hadolint. Then write the test compose, run `docker compose up -d --wait` to verify all services start healthy, and tear down. Both stay on disk — the small model only creates the production compose file.
+- **Write and verify the Dockerfile and compose files as scaffold** (see `stacks/infra.md` § "Dockerfile and Test Compose as Scaffold" and § "The Three-Compose Pattern"). Verify base image tags, write the Dockerfile, build it, pin versions via `pip freeze`, rebuild, run hadolint. Then write the services compose (dependency services only) and the full test compose (includes services compose + adds the app container). Verify both with `docker compose up -d --wait` and tear down. If the plan has an integration test task with `requires_services`, also set `service_compose` in that task's manifest entry pointing to the services compose file so the runner can start dependencies automatically.
 
 **Conftest fixtures (Python/pytest):** Read `references/stacks/python-pytest/fixture-patterns.md`. For each external dependency, pick the appropriate pattern (capture mock, client mock, or stateful fake), copy the template, and adjust patch paths. Follow the fixture interaction rules.
 
@@ -188,6 +188,7 @@ Create `00-manifest.json`. The `tooling` block holds global defaults. Tasks can 
       "estimated_complexity": "complex",
       "deferred": false,
       "requires_services": ["minio", "rabbitmq"],
+      "service_compose": "services/my-service/deployment/services.compose.yml",
       "service_check_commands": {
         "minio": "curl -sf http://localhost:9000/minio/health/live",
         "rabbitmq": "curl -sf http://localhost:15672/api/overview -u guest:guest"
@@ -198,7 +199,7 @@ Create `00-manifest.json`. The `tooling` block holds global defaults. Tasks can 
 }
 ```
 
-Note: `requires_services` is a hard requirement — the runner exits if services are unavailable.
+Note: `requires_services` is a hard requirement. When services are unavailable and `service_compose` is set, the runner starts that compose file automatically, runs the task, and tears it down after. When `service_compose` is not set, the runner exits with an error.
 
 ### 7. Generate the Runner Script
 
