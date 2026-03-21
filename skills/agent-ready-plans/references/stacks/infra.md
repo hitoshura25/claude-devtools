@@ -106,6 +106,40 @@ caught at authoring time (when they're cheap to fix) rather than at run time
 does the verification work, and the validated artifact stays on disk as the
 single source of truth.
 
+### Step 0: Research the base image's Docker setup
+
+Before writing any Dockerfile, the planning model must research how the framework
+is intended to run in Docker. Different frameworks have radically different
+entrypoint patterns, initialization mechanisms, and volume requirements.
+Writing a Dockerfile without this research produces containers that crash on
+startup with errors the small model cannot diagnose.
+
+**Required research steps:**
+
+1. Find the framework's official Docker documentation or official compose examples
+   (e.g., the Airflow "Running in Docker" guide, Django's Docker deployment docs,
+   Spring Boot's container guide)
+2. Inspect the base image's built-in entrypoint behavior — what does it do on
+   startup? Does it handle database initialization, migrations, user creation?
+3. Identify environment variables the entrypoint reads (e.g., `_AIRFLOW_DB_UPGRADE`,
+   `DJANGO_SETTINGS_MODULE`, `SPRING_PROFILES_ACTIVE`)
+4. Determine the correct CMD — does the framework expect `standalone`, `runserver`,
+   or a specific entrypoint script? Never write a custom CMD that duplicates
+   initialization the entrypoint already handles (e.g., don't run `airflow db init`
+   if the entrypoint handles it via `_AIRFLOW_DB_UPGRADE=true`)
+5. Check volume and permission requirements — does the container run as a
+   non-root user? Which directories need to be writable? Does the default
+   metadata database path exist with correct ownership, or does a custom path
+   need `mkdir -p` + `chown` before use?
+
+**Document findings** as comments in the Dockerfile or as notes in the test compose
+so the reasoning is preserved for future debugging.
+
+This research step is not optional. Templates cannot substitute for it because
+every framework has unique entrypoint behavior. The planning model must do the
+research each time, just as a human engineer would look up "how to run X in
+Docker" before writing a Dockerfile.
+
 ### Step 1: Verify the tag exists
 
 For every `FROM` line in the planned Dockerfile, run:
