@@ -89,8 +89,9 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 - Create: `services/my-service/deployment/service.compose.yml`
 
 **Behavior:**
-- [Base image family and language version requirement — e.g. "Apache Airflow with Python 3.11". Do NOT specify an exact tag here; Claude Code resolves the actual tag via `docker manifest inspect` during scaffold.]
-- [Installed dependencies — Claude Code pins exact versions via `pip freeze` during scaffold]
+- [Base image family and language version requirement — e.g. "Apache Airflow with Python 3.11". Do NOT specify an exact tag here; the planning model resolves the actual tag via `docker manifest inspect` during scaffold.]
+- [What the container must do at startup — e.g. "run Airflow standalone with SQLite metadata backend". Do NOT specify CMD, ENTRYPOINT, or entrypoint scripts here; the planning model researches the base image's official Docker documentation during scaffold to determine the correct startup mechanism.]
+- [Installed dependencies — the planning model pins exact versions via `pip freeze` during scaffold]
 - [Environment variables the container reads]
 - [Port the service listens on and health check endpoint]
 - Production compose (`service.compose.yml`) connects to the shared platform network and assumes dependencies (MinIO, RabbitMQ, etc.) are pre-running
@@ -331,7 +332,9 @@ A wiring task:
 
 **Phase 7 — Deployment — packages the service into a container and validates it runs.** Each deployment task creates two compose files: a production compose (connecting to the shared platform network, assuming dependencies are pre-running) and a self-contained test compose (bundling all dependencies as local services so the smoke test needs only Docker installed). Claude Code writes the smoke test script; the small model writes the Dockerfile and compose files. Deployment tasks are always sequenced after the wiring task they depend on — this ensures the container packages known-good code.
 
-The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. During scaffold creation, the planning model must first research the base image's official Docker documentation to understand its entrypoint behavior, built-in initialization mechanisms, and volume/permission requirements (see `stacks/infra.md` § "Step 0: Research the base image's Docker setup"). It then resolves the tag, writes the Dockerfile using the framework's intended startup mechanism, pins dependency versions via `pip freeze`, validates with hadolint, writes the test compose, and verifies the full stack starts healthy. Both stay on disk as scaffold. The small model only writes the production compose file.
+The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. The plan must NOT prescribe specific Docker commands (CMD, ENTRYPOINT, entrypoint scripts) in the scaffold description. Instead, describe *what the container must do* (e.g., "run Airflow standalone with SQLite metadata backend") and let the scaffold step research the correct mechanism. Different framework base images have radically different entrypoint patterns — the planning model that writes the plan cannot know the correct Docker commands without researching the specific base image, which happens during scaffold creation.
+
+During scaffold creation, the planning model must first research the base image's official Docker documentation to understand its entrypoint behavior, built-in initialization mechanisms, and volume/permission requirements (see `stacks/infra.md` § "Step 0: Research the base image's Docker setup"). It then resolves the tag, writes the Dockerfile using the framework's intended startup mechanism (never duplicating initialization the entrypoint already handles), pins dependency versions via `pip freeze`, validates with hadolint, writes the test compose, and verifies the full stack starts healthy. Both stay on disk as scaffold. The small model only writes the production compose file.
 
 A deployment task:
 - The Dockerfile and test compose are scaffold (created by Claude Code, already on disk and validated)
