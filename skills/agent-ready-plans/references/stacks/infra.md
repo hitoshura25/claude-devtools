@@ -140,6 +140,23 @@ every framework has unique entrypoint behavior. The planning model must do the
 research each time, just as a human engineer would look up "how to run X in
 Docker" before writing a Dockerfile.
 
+**Research verification checklist — all must be satisfied before proceeding:**
+
+1. **Does the entrypoint handle initialization (DB migrations, user creation)?**
+   If yes, which environment variables control it? Use those instead of writing
+   a custom CMD that duplicates the initialization.
+2. **What is the correct CMD for this base image?** If your CMD includes manual
+   initialization steps (e.g., `db init && ...`), verify the entrypoint doesn't
+   already handle this — duplicating it can cause errors or race conditions.
+3. **What user does the container run as?** If non-root, does every directory
+   the application writes to (data, logs, temp) exist with correct ownership
+   in the image? If using custom paths, add `mkdir -p` + `chown` in the
+   Dockerfile before the `USER` switch.
+4. **Does `docker compose up --wait` succeed?** This is the ultimate gate —
+   if the container exits or fails its healthcheck, the research was incomplete.
+   Read the container logs, fix the issue, and re-verify. Do NOT proceed to
+   Step 1 (tag verification) until the stack starts healthy.
+
 ### Step 1: Verify the tag exists
 
 For every `FROM` line in the planned Dockerfile, run:
