@@ -83,7 +83,15 @@ If infrastructure tasks are present:
 
 **Stub files must not execute code that requires runtime environment.** See `references/writing-guide.md` § "Stub Design".
 
-After setup, verify both lint and test commands pass. Do NOT commit or stage any files.
+**Scaffold verification checklist — execute every step before proceeding to Step 3b:**
+
+1. **Install dev dependencies:** Run `uv sync` (or equivalent for the project's package manager) from the service root to create the `.venv` and install all dev dependencies (pytest, ruff, etc.). Verify pytest is installed: `uv run pytest --version` must succeed.
+2. **Set lint script permissions:** Run `chmod +x` on every lint wrapper script (lint.sh, infra-lint.sh). The scripts must be executable.
+3. **Verify lint works:** Run the lint command from the project root against a stub file — e.g., `./docs/plans/my-tasks/lint.sh services/my-service/plugins/stub.py`. It must execute without "No such file or directory" errors. Note the `./` prefix — this is required.
+4. **Verify test works:** Run the test command from the project root — e.g., `cd services/my-service && uv run pytest tests/test_stub.py -x -q`. It must find pytest and execute (tests may fail against stubs — that's expected; the command itself must not error with "Failed to spawn").
+5. **Verify manifest paths match:** Confirm `lint_cmd` in the manifest starts with `./` and matches the actual script path. Confirm `test_cmd` includes the correct `cd` prefix.
+
+Do NOT proceed to Step 3b until all five checks pass. Do NOT commit or stage any files.
 
 ### 3b. Write and Validate Task Tests
 
@@ -169,7 +177,7 @@ Create `00-manifest.json`. The `tooling` block holds global defaults. Tasks can 
         "services/my-service/deployment/service.compose.yml"
       ],
       "files_modified": [],
-      "lint_cmd": "docs/plans/my-tasks/infra-lint.sh",
+      "lint_cmd": "./docs/plans/my-tasks/infra-lint.sh",
       "test_command": "bash docs/plans/my-tasks/smoke-test-my-service.sh",
       "pre_validated": true,
       "estimated_complexity": "simple",
