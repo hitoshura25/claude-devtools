@@ -162,6 +162,7 @@ The interface block defines class/function names, method signatures, parameter t
 - All public method signatures with type annotations
 - Property definitions if used
 - Class-level constants or attributes
+- **Actual default values as code** — write `field: str = "value"`, not `field: str  # default: "value"`. The small model copies the code block literally; comments about defaults are not defaults.
 
 **Do not include:**
 - Method bodies
