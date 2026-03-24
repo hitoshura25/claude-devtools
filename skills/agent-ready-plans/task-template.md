@@ -2,7 +2,7 @@
 
 Every task file follows this structure. A small model should be able to implement the component by reading only this file plus the pre-written test file on disk.
 
-**Component tasks create files only — they never modify shared files** (DAGs, registries, routers). Modifications to shared files belong in dedicated wiring tasks. See `references/writing-guide.md` § "Task Scope".
+**Component tasks create files only — they never modify shared files** (DAGs, registries, routers). Modifications to shared files belong in dedicated wiring tasks. See `references/task-doc-guide.md` for formatting principles.
 
 ---
 
@@ -65,8 +65,8 @@ class ComponentName(BaseClass):
 
 ## Tests
 
-> Pre-written by Claude Code and validated against stubs. The test file already
-> exists on disk — **do not modify it**. Implement the code to make it pass.
+> Pre-written during implementation planning and validated against stubs. The test
+> file already exists on disk — **do not modify it**. Implement the code to make it pass.
 
 **Test file:** `exact/path/from/project/root/tests/test_module.py`
 
@@ -145,9 +145,9 @@ Each bullet is a concrete requirement the implementation must satisfy. Be specif
 
 ### Tests
 
-This section references the pre-written test file by its on-disk path. The test file was written by Claude Code during Step 3b and validated through the Three-Layer Validation Gate (lint, mutation, correct failure mode). It is the single source of truth.
+This section references the pre-written test file by its on-disk path. The test file was written during implementation planning and validated through the Three-Layer Validation Gate (lint, mutation, correct failure mode). It is the single source of truth.
 
-The small model reads the test file directly from disk. The task doc does not embed a copy — embedding creates a second source of truth that can diverge from the validated file. The model implements the code to make the on-disk tests pass.
+The implementing model reads the test file directly from disk. The task doc does not embed a copy — embedding creates a second source of truth that can diverge from the validated file. The model implements the code to make the on-disk tests pass.
 
 ### Dependencies
 

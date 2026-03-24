@@ -1,12 +1,14 @@
 # Plan Format
 
-The implementation plan is a single markdown file that describes how to build a feature as a series of interface specs. It's designed to be consumed by the `devtools:agent-ready-plans` skill, which turns each task into a standalone spec file for a small model to implement. The plan defines *what* each component does and how components connect — the small model decides *how* to write the code.
+The implementation plan is a single markdown file that describes how to build a feature as a series of behavioral specs. It defines *what* each component does, how components connect, and what to test — but does NOT produce authoritative code. The validated stubs, tests, and scaffold produced during Steps 3–4 of the implementation-planning skill are the code-level source of truth.
 
-## Why Specs, Not Code
+The plan's job is to define decomposition, phasing, dependencies, and behavioral scenarios precisely enough that the planning model can write correct stubs and tests during scaffold validation. Downstream consumers (agent-ready-plans, Claude Code, or any implementing agent) read the on-disk artifacts — not the plan — for code-level details.
 
-Earlier versions of this plan format included complete code (test files and implementation) for every task. This repeatedly produced subtle bugs that small models couldn't fix: mock scopes that exited before use, collection-time import failures, metaprogramming patterns the model couldn't reason about. The plan author would get a detail wrong, and the small model would spend all its reflections trying to debug code it didn't write.
+## Why Behavioral Intent, Not Code Blocks
 
-Spec-based plans separate responsibilities cleanly: the plan defines interface contracts and behavioral scenarios, Claude Code authors the tests against stubs and validates them with a mutation gate, and the small model writes only the implementation. The plan's job is to define the interface contract and test scenarios precisely enough that Claude Code can write tests that actually catch bugs — and that the small model can't drift from the architecture.
+Earlier versions included interface contract code blocks in the plan. This created a two-source-of-truth problem: the plan's code blocks were unvalidated drafts, while the stubs produced during scaffold validation were tested and verified. When they disagreed (e.g., plan had `field: str  # default: "value"` but the validated stub had `field: str = "value"`), task docs generated from plan prose contained bugs the implementing model couldn't fix.
+
+The fix: the plan provides behavioral intent and decomposition. The scaffold step (Steps 3–4) produces validated code on disk. Task documents are generated from the on-disk files, never from plan prose.
 
 ## Writing Strategy
 
@@ -40,10 +42,11 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 - [Key testing patterns, e.g., "FrameworkX is NOT installed — test setup stubs its imports"]
 - [Fixture patterns]
 
-**Scaffold (created by Claude Code before task execution):**
-- [List of files Claude Code creates directly: config, test setup, package structure]
+**Scaffold (created during Steps 3–4 of implementation-planning):**
+- [List of files created directly: config, test setup, package structure, stubs, tests]
+- [These are on disk and validated before task docs are generated]
 
-**External dependency mock fixtures (created in test setup by Claude Code):**
+**External dependency mock fixtures (created in conftest during scaffold):**
 - [List each fixture name, what it mocks, and what it exposes to tests]
 - [Include only for external clients with complex mock patterns]
 
@@ -81,9 +84,9 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 ### Task N+1.1: [Service Name] Docker Deployment
 
-**Scaffold (created by Claude Code):**
-- `services/my-service/Dockerfile` — Claude Code writes, builds, pins versions, and validates with hadolint
-- `services/my-service/deployment/service.test.compose.yml` — Claude Code writes and verifies the full stack starts healthy via `docker compose up --wait`
+**Scaffold (created during implementation-planning):**
+- `services/my-service/Dockerfile` — planning model writes, builds, pins versions, and validates with hadolint
+- `services/my-service/deployment/service.test.compose.yml` — planning model writes and verifies the full stack starts healthy via `docker compose up --wait`
 
 **Files:**
 - Create: `services/my-service/deployment/service.compose.yml`
@@ -116,9 +119,9 @@ Spec-based plans are much shorter than code-based plans. Most can be written in 
 
 ## Task Template
 
-Each task defines an interface contract that the small model implements. The precision of the contract determines whether the model produces correct code.
+Each task defines behavioral requirements and the shape of the interface the implementation must satisfy. The plan describes intent — the validated stubs and tests on disk are the code-level authority.
 
-**Tests and implementation belong in the same task.** Claude Code writes the test file during the scaffold phase and saves it to disk. The task doc references the test file by path — it does not embed a copy. The small model reads the test file directly and implements the code to pass it. Never split the test file into a separate task from its implementation.
+**Tests and implementation belong in the same task.** The test file is written during scaffold validation (Step 4 of implementation-planning) and saved to disk. The task doc references the test file by path — it does not embed a copy. The implementing model reads the test file directly and implements the code to pass it. Never split the test file into a separate task from its implementation.
 
 **Component tasks only create files — they never modify shared files.** No `Modify:` entries in component tasks. Wiring (adding to a registry, DAG, router, or dispatcher) is always a separate, dedicated task that runs after all components are complete. See § "Phasing Guidelines" below.
 
@@ -129,14 +132,11 @@ Each task defines an interface contract that the small model implements. The pre
 - Create: `exact/path/from/project/root/component.ext`
 - Create: `tests/exact/path/test_component.ext`
 
-**Interface:**
-
-[language code block]
-class ComponentName extends BaseClass {
-  methodOne(param: Type): ReturnType  // what this does, not how
-  methodTwo(param: Type): ReturnType  // what this does, not how
-}
-[end code block]
+**Interface (prose — no code blocks):**
+- Class `ComponentName` extends `BaseClass`
+- Method `methodOne(param: Type) -> ReturnType` — what this does
+- Method `methodTwo(param: Type) -> ReturnType` — what this does
+- Class-level attribute `some_field: str` with default `"value"`
 
 **Behavior:**
 - [Concrete behavioral requirement]
@@ -153,26 +153,32 @@ class ComponentName extends BaseClass {
 
 Note the absence of a `Wiring:` section. Component tasks do not touch orchestrating files. The model creates its component and its tests — nothing else.
 
-## Writing Interface Contracts
+**Note the absence of code blocks in the Interface section.** The plan describes what methods exist and their types in prose. The planning model writes the actual code when creating stubs in Step 3. This prevents unvalidated code decisions in the plan from leaking into stubs and task docs.
 
-The interface block defines class/function names, method signatures, parameter types, and return types. The small model must match these exactly so downstream tasks can import and use the component.
+## Writing Interface Descriptions
 
-**Include:**
+The interface section in the plan describes the shape and purpose of each component's public API **in prose, not code blocks.** It guides the planning model when writing stubs in Step 3. **The plan's interface description is not the source of truth** — the validated stub on disk is. Task documents are generated from the stub, not from the plan.
+
+**Write interface descriptions as prose bullet points:**
 - Class/type name and inheritance
-- All public method signatures with type annotations
+- Public method names with parameter types and return types
 - Property definitions if used
-- Class-level constants or attributes
-- **Actual default values as code** — write `field: str = "value"`, not `field: str  # default: "value"`. The small model copies the code block literally; comments about defaults are not defaults.
+- Class-level constants or attributes with their default values
+- Whether a method is abstract, optional, or has a specific override pattern
+
+**Do NOT write code blocks for interfaces.** Code blocks in the plan look authoritative but are unvalidated. The planning model makes code-level decisions (e.g., whether to use `@abstractmethod` or `raise NotImplementedError`, how to structure default values, whether a constructor loads resources eagerly) during Step 3 when it writes stubs, and validates those decisions in Step 4 via the validation script. If the plan contained a code block with `@abstractmethod`, the planning model might copy it into the stub without thinking through the implications for subclasses — which is exactly what caused the HeartRate/Sleep abstract class instantiation bug.
 
 **Do not include:**
 - Method bodies
 - Private/internal methods
 - Standard library imports
-- Module-level instantiation of environment-dependent objects (e.g. `settings = Settings()`, `client = DbClient()`). These objects read from environment variables, files, or network at construction time — none of which exist in a test environment. Every file that imports the module triggers the constructor at import time, causing collection failures across all transitively-importing test files before a single test runs. Specify the class only; callers construct instances inside their own callables when they need them.
+- Module-level instantiation of environment-dependent objects
 
 **Do include in Dependencies:**
 - Import paths for project-internal modules the component uses
 - Which task created each dependency
+
+**Important:** During Step 3 (scaffold), the planning model writes stubs based on this description. During Step 4 (validation), the stubs are tested via `validate-stubs.sh`. If the stub differs from the plan's description (because testing revealed the plan was wrong), the stub wins — it was validated. The plan is not updated retroactively; the on-disk stub is the authority.
 
 ### Verify Abstract Type Fit Before Writing the Interface
 
@@ -226,9 +232,9 @@ The sweet spot: describe *what the code does* precisely enough that any correct 
 
 ## Writing Test Scenarios
 
-Test scenarios are the input Claude Code uses to write actual test code during Step 3b. They are not instructions for the small model — the small model only sees the finished test file.
+Test scenarios are the input the planning model uses to write actual test code during Step 4 (scaffold validation). They are not instructions for the implementing model — the implementing model only sees the finished test file.
 
-Write scenarios precise enough that Claude Code can derive correct assertions from them.
+Write scenarios precise enough that correct test assertions can be derived from them.
 
 ```
 **Test scenarios:**
@@ -240,7 +246,7 @@ Write scenarios precise enough that Claude Code can derive correct assertions fr
 ```
 
 **Key rules:**
-- Name each scenario (Claude Code uses these as test function names)
+- Name each scenario (the planning model uses these as test function names)
 - Specify concrete test data where it matters — exact values, not "some records"
 - State the expected outcome unambiguously
 - Cover boundary conditions explicitly
@@ -256,7 +262,7 @@ Deployment tasks (Phase 7) have a different test shape from component and wiring
 - [smoke_test]: Container builds successfully; service starts; health endpoint returns HTTP 200 within timeout
 ```
 
-Claude Code writes a smoke test script (from a template) during Step 3b. The Dockerfile is scaffold — Claude Code writes, builds, pins versions, and validates it with hadolint during Step 3 (see `stacks/infra.md` § "Dockerfile as Scaffold"). The small model's job is to produce compose files that make the smoke test pass. The test compose must be self-contained — no external services required.
+The planning model writes a smoke test script (from a template) during scaffold setup. The Dockerfile is scaffold — the planning model writes, builds, pins versions, and validates it with hadolint during Step 3 (see `stacks/infra.md` § "Dockerfile as Scaffold"). The implementing model's job is to produce compose files that make the smoke test pass. The test compose must be self-contained — no external services required.
 
 ### Wiring Task Test Scenarios
 
@@ -308,7 +314,7 @@ Use this exact mock pattern:
 The phase structure mirrors how an engineering team handles dependencies: build components in isolation first, wire them together, package them for deployment, then run integration tests against live services.
 
 ```
-Phase 1: Project Scaffolding     (Claude Code creates directly — not a task)
+Phase 1: Project Scaffolding     (planning model creates directly — not a task)
 Phase 2: Core Abstractions       (base types, shared models, config)
 Phase 3: Infrastructure Clients  (external service wrappers)
 Phase 4: Primary Components      (main business logic — create files only, no wiring)
@@ -318,7 +324,7 @@ Phase 7: Deployment              (Docker, compose files — sequenced after wiri
 Phase 8: Integration Tests       (service-gated — generated upfront, hard-fail if services unavailable)
 ```
 
-**Phase 1 is special:** The project scaffold is created directly by Claude Code — not delegated to a small model.
+**Phase 1 is special:** The project scaffold is created directly by the planning model during implementation-planning — not delegated to the implementing model.
 
 **Component phases (2–5) create files only.** Each task produces its own source file and test file. No task in these phases touches a shared orchestrating file (DAG, router, registry, dispatcher). A component is independently testable in complete isolation — its `test_command` runs only its own test file.
 
@@ -331,14 +337,14 @@ A wiring task:
 - Runs the orchestrator test as its `test_command`
 - Is sequenced after all component tasks it depends on
 
-**Phase 7 — Deployment — packages the service into a container and validates it runs.** Each deployment task creates two compose files: a production compose (connecting to the shared platform network, assuming dependencies are pre-running) and a self-contained test compose (bundling all dependencies as local services so the smoke test needs only Docker installed). Claude Code writes the smoke test script; the small model writes the Dockerfile and compose files. Deployment tasks are always sequenced after the wiring task they depend on — this ensures the container packages known-good code.
+**Phase 7 — Deployment — packages the service into a container and validates it runs.** Each deployment task creates two compose files: a production compose (connecting to the shared platform network, assuming dependencies are pre-running) and a self-contained test compose (bundling all dependencies as local services so the smoke test needs only Docker installed). The planning model writes the smoke test script; the implementing model writes the compose files. Deployment tasks are always sequenced after the wiring task they depend on — this ensures the container packages known-good code.
 
 The plan specifies the base image family and requirements (e.g. "Apache Airflow with Python 3.11") — not the exact tag. The plan must NOT prescribe specific Docker commands (CMD, ENTRYPOINT, entrypoint scripts) in the scaffold description. Instead, describe *what the container must do* (e.g., "run Airflow standalone with SQLite metadata backend") and let the scaffold step research the correct mechanism. Different framework base images have radically different entrypoint patterns — the planning model that writes the plan cannot know the correct Docker commands without researching the specific base image, which happens during scaffold creation.
 
 During scaffold creation, the planning model must first research the base image's official Docker documentation to understand its entrypoint behavior, built-in initialization mechanisms, and volume/permission requirements (see `stacks/infra.md` § "Step 0: Research the base image's Docker setup"). It then resolves the tag, writes the Dockerfile using the framework's intended startup mechanism (never duplicating initialization the entrypoint already handles), pins dependency versions via `pip freeze`, validates with hadolint, writes the test compose, and verifies the full stack starts healthy. Both stay on disk as scaffold. The small model only writes the production compose file.
 
 A deployment task:
-- The Dockerfile and test compose are scaffold (created by Claude Code, already on disk and validated)
+- The Dockerfile and test compose are scaffold (created during implementation-planning, already on disk and validated)
 - The model creates only `service.compose.yml`
 - Has no `Interface:` block — infrastructure files have no API surface to specify
 - Has a `[smoke_test]` scenario: container starts, health endpoint returns 200
@@ -355,7 +361,7 @@ This structure means a broken wiring task cannot cascade-fail component tasks �
 
 These are two distinct categories. Confusing them produces incorrect runner behavior.
 
-**Deferred** (`"deferred": true` in the manifest): The task doc genuinely cannot be written before the run starts, because its content depends on runtime artifacts produced by earlier tasks — actual class names, actual module paths, actual function signatures that only exist after the small model has implemented them. The runner halts when it reaches a deferred task and waits for Claude Code to generate the doc from the real produced code.
+**Deferred** (`"deferred": true` in the manifest): The task doc genuinely cannot be written before the run starts, because its content depends on runtime artifacts produced by earlier tasks — actual class names, actual module paths, actual function signatures that only exist after the small model has implemented them. The runner halts when it reaches a deferred task and waits for the planning model to generate the doc from the real produced code.
 
 In practice, **no task category in a well-specified plan should be deferred** once wiring tasks are generated upfront with `import_integrity` tests. Deferred tasks are a fallback for plans where interface contracts are too loosely specified to enumerate exact import paths ahead of time.
 

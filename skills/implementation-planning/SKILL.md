@@ -1,19 +1,20 @@
 ---
 name: implementation-planning
-description: Design features and produce implementation plans optimized for agent-ready task decomposition. Use this skill whenever someone says "plan this feature", "design and plan", "I need an implementation plan", "help me plan", or has a feature idea that needs to go from concept to actionable tasks. Also trigger when someone mentions wanting to use local models, aider, or task decomposition — even if they don't explicitly ask for a "plan". This skill produces the design doc and implementation plan; use devtools:agent-ready-plans afterward to decompose it into task files.
+description: Design features and produce validated implementation plans with working scaffold, stubs, and tests on disk. Use this skill whenever someone says "plan this feature", "design and plan", "I need an implementation plan", "help me plan", or has a feature idea that needs to go from concept to actionable implementation. Also trigger when someone mentions wanting to use local models, aider, or task decomposition — even if they don't explicitly ask for a "plan". This skill produces the design doc, implementation plan, AND validated scaffold (stubs, tests, lint scripts, Dockerfile) — everything needed before code implementation begins. Use devtools:agent-ready-plans afterward to package the validated artifacts into task files for coding agents.
 ---
 
 # Implementation Planning
 
-Turn a feature idea into a design document and implementation plan that decomposes cleanly into agent-ready task files. The plan defines interface contracts and behavioral specs for each component — precise enough for Claude Code to write verified tests, and for a small model to implement the code that passes them.
+Turn a feature idea into a design document, implementation plan, and validated scaffold. The plan defines the decomposition, phasing, and behavioral intent. The scaffold proves it works: stubs match interface contracts, tests validate against stubs, lint passes, and infrastructure builds.
 
-This skill produces two artifacts:
+This skill produces three categories of output:
 1. **Design document** — the what and why (architecture, data model, decisions)
-2. **Implementation plan** — the how (phased tasks with interface contracts, behavior specs, test scenarios, and wiring steps)
+2. **Implementation plan** — the how (phased tasks with behavioral specs, test scenarios, and wiring steps)
+3. **Validated scaffold on disk** — stubs, tests, conftest fixtures, lint scripts, Dockerfile, smoke test scripts — all verified working
 
-These feed directly into `devtools:agent-ready-plans` for task decomposition.
+The validated artifacts on disk are the source of truth. The plan provides decomposition and intent; the scaffold is the ground truth that downstream consumers (agent-ready-plans, Claude Code, or any implementing agent) read directly.
 
-Announce at start: "I'm using the implementation-planning skill to design and plan this feature."
+Announce at start: "I'm using the implementation-planning skill to design, plan, and validate the scaffold for this feature."
 
 ## Process
 
@@ -21,88 +22,164 @@ Announce at start: "I'm using the implementation-planning skill to design and pl
 
 Use `superpowers:brainstorming` for the design exploration phase — understanding project context, asking focused questions, proposing approaches with trade-offs, and reaching a shared understanding of what's being built.
 
-**Scope boundary:** Use brainstorming *only* through its design document output. Once the design doc is saved to `docs/plans/YYYY-MM-DD-<feature-name>-design.md`, stop the brainstorming workflow and return here to Step 2. Do not follow the brainstorming skill's "After the Design" section — it chains into `superpowers:writing-plans` which produces a generic plan format. This skill replaces that step with a plan format optimized for agent-ready task decomposition. Also skip any git commit steps from brainstorming — do not commit, stage, or add files unless the user explicitly asks.
+**Scope boundary:** Use brainstorming *only* through its design document output. Once the design doc is saved to `docs/plans/YYYY-MM-DD-<feature-name>-design.md`, stop the brainstorming workflow and return here to Step 2. Do not follow the brainstorming skill's "After the Design" section. Also skip any git commit steps from brainstorming — do not commit, stage, or add files unless the user explicitly asks.
 
 If the user already has a design document (or provides enough context to skip brainstorming), move directly to Step 2.
 
 ### 2. Write the Implementation Plan
 
-This is where precision matters most. The plan is the source of truth that the agent-ready-plans skill decomposes into individual task files for small models.
-
-**The plan defines interfaces, not implementations.** Each task specifies: what class/function to create, its public method signatures with type hints, behavioral requirements, test scenarios, and how it wires into the rest of the system. Claude Code uses these specs to write and validate the tests; the small model writes the implementation to make them pass.
-
 Read `references/plan-format.md` for the complete plan structure, task template, and formatting.
 
-**Key principles for plans that decompose well:**
+The plan defines decomposition, phasing, dependencies, and behavioral intent. It does NOT produce authoritative code blocks — those come from the validated stubs in Step 4.
 
-**Precise interface contracts.** Every task must define the class name, method signatures, parameter types, and return types that downstream tasks depend on. The model can structure its internals however it wants, but the public interface must match the spec so cross-task imports work.
+**Key principles:**
 
-**Concrete behavioral specs.** Don't say "handles edge cases" — say "returns empty list when no records are newer than the watermark." Each behavior becomes a test scenario the model implements. The more specific the scenario, the more meaningful the tests.
-
-**Test scenarios for Claude Code, not test code.** Describe what to set up and what to assert: "In-memory SQLite with 3 rows at times 1000/2000/3000, extract with watermark=1500 → returns only rows at 2000 and 3000." Claude Code uses these scenarios to write and validate the actual test code during the agent-ready-plans scaffold phase. See "Writing Test Scenarios" in `references/plan-format.md`.
-
-**Environment constraints, not mock instructions.** When a project has unusual testing requirements (Airflow not installed, RabbitMQ not running), state these as constraints: "Mock pika.BlockingConnection — no real connections in tests." Don't prescribe the exact mock pattern — the model picks one that works with its implementation.
-
-**Complete wiring.** Every component that gets created must also be wired into whatever consumes it — in the same task or an explicit later task. Read `references/wiring-completeness.md` for the detailed checklist.
-
-**Deployment tasks when the plan includes containerisation.** If the service will be packaged as a Docker container, include a Deployment phase (Phase 7) after wiring. Each deployment task specifies the Dockerfile, a production compose file, and a self-contained test compose file. The test compose bundles all dependencies so the smoke test requires only Docker — no shared infrastructure stack. See `references/plan-format.md` § "Phasing Guidelines" for the deployment task template.
-
-**Exact file paths.** Always specify the full path from project root. Never "create a config file" — always "create `services/airflow-ingestion/config/settings.py`".
-
-**Scaffold as a separate concern.** Phase 1 (project scaffold) is not a task for the small model. List what the scaffold contains in the plan — the agent-ready-plans skill creates these files directly via Claude Code before delegating tasks to the small model.
-
-**Service-gated tasks, not deferred.** Integration tests that need live services (MinIO, RabbitMQ, a database) should be marked with `Requires services:` in the plan. The runner will fail the run if those services aren't available — it does not skip. This means developers must start required services before running the full task suite, but it also means every completed run is a complete, verified result.
+- **Behavioral specs, not code blocks.** Describe what each component does precisely enough to write tests against, but don't prescribe interface code. The stubs produced in Step 4 are the code-level authority.
+- **Test scenarios for test writing.** Describe what to set up and assert concretely enough that correct tests can be derived. See `references/plan-format.md` § "Writing Test Scenarios".
+- **Environment constraints, not mock instructions.** State what's mocked and what can't make real connections.
+- **Complete wiring.** Every component must be wired into whatever consumes it. Read `references/wiring-completeness.md`.
+- **Exact file paths** from project root. Never "create a config file" — always "create `services/my-service/config/settings.py`".
+- **Scaffold as a separate concern.** Phase 1 (project scaffold) is created directly in Step 3, not delegated.
+- **Service-gated tasks, not deferred.** Integration tests use `Requires services:` — not deferred.
 
 Save to `docs/plans/YYYY-MM-DD-<feature-name>-implementation.md`.
 
-**No automatic git operations.** Do not commit, stage, or add files to git unless the user explicitly asks. Planning artifacts are the user's to manage.
+**No automatic git operations.** Do not commit, stage, or add files to git unless the user explicitly asks.
 
-### 3. Validate the Plan
+### 3. Set Up Tooling and Scaffold
 
-Before handing off, walk through the wiring completeness checklist in `references/wiring-completeness.md`:
+Install tooling and create the project scaffold *now* — do not delegate these. Implementing models can write business logic but can't debug missing tools, broken configs, or subtle test setup.
+
+#### 3a. Tooling Setup
+
+Read `references/tooling.md` for the discovery process. Then read the appropriate `references/stacks/<language>-<framework>.md`.
+
+**Scan for infrastructure tasks:** Check whether any task's `files_created` includes `Dockerfile`, `*compose*.yml`, `*.tf`, or Kubernetes YAML. If infrastructure tasks are present:
+- Install `hadolint` (see `stacks/infra.md` § "Tooling Setup")
+- Copy `scripts/infra-lint-wrapper-template.sh` → tasks folder as `infra-lint.sh`
+- For each Docker/compose task, copy `scripts/docker-smoke-test-template.sh` and configure `COMPOSE_FILE` and `HEALTH_URL`
+
+#### 3b. Conftest Fixtures
+
+Read `references/stacks/<language>/fixture-patterns.md` (e.g., `python-pytest/fixture-patterns.md`). For each external dependency, pick the appropriate pattern (capture mock, client mock, or stateful fake), copy the template, and adjust patch paths. Follow the fixture interaction rules.
+
+#### 3c. Project Scaffold
+
+Create these files directly:
+- Build/package config with all dependencies, test config, lint config
+- Test setup file with fixtures (from fixture-patterns.md templates)
+- All package `__init__` files
+- Copy `scripts/lint-ruff-wrapper.sh` → tasks folder as `lint.sh` (or appropriate lint wrapper for the language)
+- A stub file for each task (see Step 4)
+
+#### 3d. Infrastructure Scaffold (if applicable)
+
+Read `stacks/infra.md` § "Step 0: Research the base image's Docker setup" and § "Dockerfile and Test Compose as Scaffold".
+
+- Research the base image's official Docker documentation — entrypoint behavior, initialization mechanisms, environment variables, volume/permission requirements
+- Verify base image tags via `docker manifest inspect`
+- Write the Dockerfile using the framework's intended startup mechanism
+- Build unpinned first, capture resolved versions via `pip freeze`, pin them, rebuild
+- Run hadolint against the Dockerfile
+- Write the services compose (dependency services only) and the full test compose (includes services compose + adds the app container)
+- Verify both with `docker compose up -d --wait` and tear down
+
+#### 3e. Scaffold Verification Checklist
+
+Execute every step before proceeding to Step 4:
+
+1. **Install dev dependencies:** Run `uv sync` (or equivalent) from the service root. Verify the test runner is installed: e.g., `uv run pytest --version` must succeed.
+2. **Set lint script permissions:** Run `chmod +x` on every lint wrapper script. The scripts must be executable.
+3. **Verify lint works:** Run the lint command from the project root against a stub file — e.g., `./docs/plans/my-tasks/lint.sh services/my-service/plugins/stub.py`. It must execute without "No such file or directory" errors. Note the `./` prefix — this is required.
+4. **Verify test works:** Run the test command from the project root — e.g., `cd services/my-service && uv run pytest tests/test_stub.py -x -q`. It must find the test runner and execute (tests may fail against stubs — that's expected; the command itself must not error).
+5. **Verify manifest paths match:** Confirm `lint_cmd` starts with `./` and matches the actual script path. Confirm `test_cmd` includes the correct `cd` prefix.
+
+Do NOT proceed to Step 4 until all five checks pass. Do NOT commit or stage any files.
+
+### 4. Write and Validate Tests
+
+For each task, write its test file to disk now — before anyone generates task documents.
+
+Read `references/test-writing-guide.md` for the full rules including the Three-Layer Validation Gate.
+
+**For service tasks:**
+
+1. Write the test file against the stub
+2. **Check fixture interaction rules** — verify in the fixture-patterns reference that fixture combinations are valid
+3. Run the mutation gate (see `references/tooling.md` § "Mutation Testing")
+4. **Run the stub validation script** — do NOT use `pytest | tail` or any manual/truncated approach:
+   ```bash
+   bash scripts/validate-stubs.sh <service-root>
+   ```
+   This script runs each test file individually, parses every failure, and rejects any failure that is not `NotImplementedError` or `AssertionError`. It catches constructor errors (TypeError from abstract classes, FileNotFoundError from credential loading), fixture wiring bugs, import errors, and any other setup-level failure that would trap the implementing model.
+
+   **Do NOT proceed until this script exits 0.** If it reports invalid failures, fix the stub or test before continuing.
+5. Replace stub bodies with "not implemented" once all gates pass
+
+**For infrastructure tasks:**
+
+1. Verify the Dockerfile and test compose are on disk (created in Step 3d as scaffold)
+2. Confirm the smoke test script is configured correctly
+3. Run the smoke test; confirm it fails on health timeout (not build failure or container crash)
+4. Clean up: `docker rmi test-build-verify 2>/dev/null || true`
+
+**Record validation results** for the manifest: service tasks get `"pre_validated": true` and `"test_file"`. Infrastructure tasks get `"pre_validated": true` but no `"test_file"`.
+
+### 5. Validate the Plan
+
+Walk through the wiring completeness checklist in `references/wiring-completeness.md`:
 
 - Every file created in the plan is consumed, imported, or registered somewhere
-- Every registry, factory, router, or dispatcher gets updated when new entries are added in later phases
+- Every registry, factory, router, or dispatcher gets updated when new entries are added
 - Cross-phase dependencies are explicit (not implied by task ordering)
 - Integration tests use `Requires services:` — not marked as deferred
 - Deployment tasks specify both a production compose and a self-contained test compose
-- Every task's interface contract includes type hints on all public methods
 - Every task's test scenarios are specific enough to verify the behavioral specs
 
-If gaps are found, update the plan. This check is worth the 5 minutes — a single missing registration step causes cascading test failures across 20 automated tasks.
+If gaps are found, update the plan and adjust stubs/tests as needed.
 
-### 4. Hand Off
+### 6. Hand Off
 
 Present the completed artifacts and offer the choice:
 
 ```
-Design: docs/plans/YYYY-MM-DD-feature-name-design.md
-Plan:   docs/plans/YYYY-MM-DD-feature-name-implementation.md
+Design:    docs/plans/YYYY-MM-DD-feature-name-design.md
+Plan:      docs/plans/YYYY-MM-DD-feature-name-implementation.md
+Scaffold:  On disk — stubs, tests, conftest, lint scripts validated ✅
+Infra:     Dockerfile built + pinned, test compose verified ✅ (if applicable)
 
 Phase breakdown:
-  Phase 1: Project Scaffolding    — Claude Code creates directly
-  Phase 2: Core Components        — 4 tasks (spec-based)
+  Phase 1: Project Scaffolding    — created directly (on disk)
+  Phase 2: Core Components        — 4 tasks (stubs + tests validated)
   ...
-  Phase 7: Deployment             — 1 task (Docker smoke test)
-  Phase 8: Integration Tests      — 2 tasks (service-gated, hard-fail if unavailable)
+  Phase 7: Deployment             — 1 task (Dockerfile + test compose on disk)
+  Phase 8: Integration Tests      — 2 tasks (service-gated)
 
-Ready to decompose into agent-ready task files now, or would you
-prefer to review the plan first and decompose later?
+Ready to package into agent-ready task files now, or would you
+prefer to review the plan and scaffold first?
 ```
 
-If the user wants to proceed immediately, use `devtools:agent-ready-plans` with the design doc and implementation plan as inputs. If they want to review first, point them to the files and remind them they can trigger decomposition later with `/devtools:agent-ready`.
+If the user wants to proceed immediately, use `devtools:agent-ready-plans` with the design doc and implementation plan as inputs. The agent-ready skill will read the validated stubs and tests directly from disk. If they want to review first, point them to the files and remind them they can trigger packaging later.
 
 ## What This Skill Does NOT Do
 
-- Does not implement any code (except scaffold files via agent-ready-plans)
-- Does not create task files (that's agent-ready-plans)
-- Does not run tests or modify source files
-- Does not touch anything outside of `docs/plans/`
+- Does not implement business logic (only stubs)
+- Does not create task doc files (that's agent-ready-plans)
+- Does not create the runner script (that's agent-ready-plans)
 - Does not commit, stage, or add files to git
 
 ## Bundled Resources
 
 | Resource | When to read |
 |----------|-------------|
-| `references/plan-format.md` | When writing the implementation plan (Step 2) — complete structure, task template, formatting, phasing guidelines |
-| `references/wiring-completeness.md` | When writing cross-phase tasks (Step 2) and validating the plan (Step 3) — checklist for registration gaps |
+| `references/plan-format.md` | Step 2 — plan structure, task template, phasing guidelines |
+| `references/wiring-completeness.md` | Steps 2, 5 — checklist for registration gaps |
+| `references/tooling.md` | Steps 3, 4 — tooling discovery, fixture criteria, mutation gate |
+| `references/test-writing-guide.md` | Step 4 — test correctness, validation gates, stub design |
+| `references/stacks/<language>-<framework>.md` | Steps 3, 4 — language-specific tooling and traps |
+| `references/stacks/<language>/fixture-patterns.md` | Step 3b — fixture templates, interaction rules |
+| `references/stacks/infra.md` | Steps 3d, 4 — Docker/compose/Terraform tooling |
+| `scripts/lint-ruff-wrapper.sh` | Step 3c, Python/ruff — copy to tasks folder |
+| `scripts/infra-lint-wrapper-template.sh` | Step 3a, infra tasks — copy as `infra-lint.sh` |
+| `scripts/docker-smoke-test-template.sh` | Step 3a, Docker tasks — copy per service |
+| `scripts/validate-stubs.sh` | Step 4 — automated Layer 2 validation gate (run, do not modify) |
