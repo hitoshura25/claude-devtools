@@ -29,14 +29,14 @@ Every test file must pass all three layers before being marked `"pre_validated":
 
 **Layer 1: Mutation gate.** Run a mutation testing tool against the stub + tests. Strengthen tests until mutation score ≥ 80%. See `tooling.md` § "Mutation Testing".
 
-**Layer 2: Correct failure mode.** Run `scripts/validate-stubs.sh <service-root>` — do NOT run pytest manually with piped/truncated output. The script runs each test file individually and programmatically verifies that every failure is `NotImplementedError` or `AssertionError`. It rejects:
+**Layer 2: Correct failure mode.** Run `scripts/validate-stubs.sh <service-root>` — do NOT run pytest manually with piped/truncated output. Do NOT pipe the script itself through `| tail` or `| head`. The script writes all output to a timestamped log file automatically — read the log file for full tracebacks when investigating failures. The script runs each test file individually (including integration tests), sets `COLUMNS=300` to prevent pytest truncation, and programmatically verifies that every failure is `NotImplementedError` or `AssertionError`. It rejects:
 - ❌ `TypeError` (e.g., `Can't instantiate abstract class` — stub missing an abstract method implementation)
 - ❌ `FileNotFoundError` (e.g., constructor tries to load credentials from a nonexistent file)
 - ❌ `ImportError` / `ModuleNotFoundError` (missing mock registration or import path)
 - ❌ Any `ERROR at setup` (fixture wiring bug)
 - ❌ Any test passing against the stub (test is vacuous)
 
-The script must exit 0 before proceeding. If it reports invalid failures, fix the stub or test.
+The script must exit 0 before proceeding. If it reports invalid failures, read the log file for full tracebacks, fix the stub or test, and re-run. Do NOT work around failures by changing test structure (e.g., converting `pytest.exit()` to `skipif`).
 
 All three layers must pass before marking `"pre_validated": true`.
 

@@ -8,6 +8,10 @@
 # Any other failure type (TypeError, FileNotFoundError, ImportError, etc.)
 # indicates a bug in the test or stub that will break the implementing model.
 #
+# Output is written to a log file AND printed to the console. The planning
+# model should reference the log file for full error details rather than
+# piping this script through `| tail` or `| head`.
+#
 # Usage:
 #   ./validate-stubs.sh <service-root> [test-dir]
 #
@@ -24,6 +28,8 @@
 #       or pass (settings tests may pass against stubs if defaults satisfy assertions)
 #   1 — At least one test fails for an unacceptable reason
 #   2 — Script usage error or missing dependencies
+#
+# Log file: Written to <service-root>/validate-stubs-<timestamp>.log
 
 set -euo pipefail
 
@@ -44,6 +50,22 @@ if [[ ! -d "$FULL_TEST_DIR" ]]; then
   exit 2
 fi
 
+# ── Log file setup ─────────────────────────────────────────────
+# Log file is written inside the service root so it stays with the project,
+# not in the shared skill scripts directory.
+LOG_FILE="$SERVICE_ROOT/validate-stubs-$(date +%Y%m%d-%H%M%S).log"
+
+# Tee all output to both console and log file
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "Log file: $LOG_FILE"
+echo ""
+
+# ── Prevent terminal truncation ────────────────────────────────
+# pytest 9.x truncates FAILED summary lines based on terminal width.
+# Setting COLUMNS=300 ensures error types are never cut off.
+export COLUMNS=300
+
 # ── Acceptable error types ─────────────────────────────────────
 # NotImplementedError: stub method bodies raise this
 # AssertionError: test assertions fail against stub return values
@@ -62,6 +84,7 @@ fi
 echo "╔══════════════════════════════════════════════╗"
 echo "║  Layer 2 Stub Validation — $TOTAL test files"
 echo "║  Service: $SERVICE_ROOT"
+echo "║  Log: $LOG_FILE"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
@@ -84,6 +107,11 @@ for TEST_FILE in $TEST_FILES; do
   OUTPUT=$(cd "$SERVICE_ROOT" && uv run pytest "$REL_PATH" --tb=line -q 2>&1)
   PYTEST_EXIT=$?
   set -e
+
+  # Log full pytest output for this file
+  echo "  --- pytest output for $REL_PATH ---" >> "$LOG_FILE"
+  echo "$OUTPUT" >> "$LOG_FILE"
+  echo "  --- end output ---" >> "$LOG_FILE"
 
   if [[ $PYTEST_EXIT -eq 0 ]]; then
     # All tests passed — acceptable (e.g., settings defaults)
@@ -110,7 +138,18 @@ for TEST_FILE in $TEST_FILES; do
 
       # Extract error type after " - "
       ERROR_PART=$(echo "$line" | sed 's/.*- //')
-      ERROR_TYPE=$(echo "$ERROR_PART" | grep -oE '^[A-Za-z_]+Error' || echo "UNKNOWN")
+      ERROR_TYPE=$(echo "$ERROR_PART" | grep -oE '^[A-Za-z_]+Error' || echo "")
+
+      # If no error type found (pytest truncation or bare assertion),
+      # check for known patterns
+      if [[ -z "$ERROR_TYPE" ]]; then
+        # "assert X == Y" without AssertionError prefix
+        if echo "$ERROR_PART" | grep -qE "^assert "; then
+          ERROR_TYPE="AssertionError"
+        else
+          ERROR_TYPE="UNKNOWN"
+        fi
+      fi
 
       # Also check for TypeError pattern "Can't instantiate abstract class"
       if echo "$ERROR_PART" | grep -q "Can't instantiate abstract class"; then
@@ -168,6 +207,9 @@ if [[ $BAD_FAILURES -gt 0 ]]; then
     echo "  - $f"
   done
   echo ""
+  echo "Full output is in: $LOG_FILE"
+  echo "Review the log file for complete tracebacks."
+  echo ""
   echo "Fix these before proceeding. Each test must fail with"
   echo "NotImplementedError (stub body) or AssertionError (wrong return)."
   echo "Any other error type means the test or stub has a bug."
@@ -175,5 +217,6 @@ if [[ $BAD_FAILURES -gt 0 ]]; then
 else
   echo ""
   echo "✅ Layer 2 PASSED — all failures are acceptable stub behavior."
+  echo "Full log: $LOG_FILE"
   exit 0
 fi

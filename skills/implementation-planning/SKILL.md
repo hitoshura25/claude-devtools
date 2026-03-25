@@ -107,13 +107,20 @@ Read `references/test-writing-guide.md` for the full rules including the Three-L
 1. Write the test file against the stub
 2. **Check fixture interaction rules** — verify in the fixture-patterns reference that fixture combinations are valid
 3. Run the mutation gate (see `references/tooling.md` § "Mutation Testing")
-4. **Run the stub validation script** — do NOT use `pytest | tail` or any manual/truncated approach:
+4. **Run the stub validation script** — do NOT pipe output through `| tail` or `| head`:
    ```bash
-   bash scripts/validate-stubs.sh <service-root>
+   cd <project-root> && bash <path-to-skill>/scripts/validate-stubs.sh <service-root>
    ```
-   This script runs each test file individually, parses every failure, and rejects any failure that is not `NotImplementedError` or `AssertionError`. It catches constructor errors (TypeError from abstract classes, FileNotFoundError from credential loading), fixture wiring bugs, import errors, and any other setup-level failure that would trap the implementing model.
+   The script writes full output to both the console AND a timestamped log file (in the scripts/ directory). If any failures need investigation, **read the log file** for complete tracebacks rather than re-running pytest manually with truncated pipes.
 
-   **Do NOT proceed until this script exits 0.** If it reports invalid failures, fix the stub or test before continuing.
+   The script handles:
+   - Runs each test file individually (no batch output truncation)
+   - Sets `COLUMNS=300` to prevent pytest 9.x from truncating error types
+   - Detects `assert X == Y` lines without explicit `AssertionError` prefix
+   - Accepts only `NotImplementedError` and `AssertionError`; rejects all other failure types
+   - All test files are validated, including integration tests — if an integration test can't be collected without live services, that's a test design bug to fix (use per-test conditional skips, not module-level `pytest.exit()`)
+
+   **Do NOT proceed until this script exits 0.** If it reports invalid failures, read the log file for full tracebacks, fix the stub or test, and re-run. Do NOT work around failures by changing test structure (e.g., converting `pytest.exit()` to `skipif` to avoid the error).
 5. Replace stub bodies with "not implemented" once all gates pass
 
 **For infrastructure tasks:**
