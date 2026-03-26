@@ -123,6 +123,8 @@ Read `references/test-writing-guide.md` for the full rules including the Three-L
    **Do NOT proceed until this script exits 0.** If it reports invalid failures, read the log file for full tracebacks, fix the stub or test, and re-run. Do NOT work around failures by changing test structure (e.g., converting `pytest.exit()` to `skipif` to avoid the error).
 5. Replace stub bodies with "not implemented" once all gates pass
 
+**Every test function must be complete.** Test functions must never contain `raise NotImplementedError` — only stubs do. If you cannot finish writing all tests (due to context limits, usage limits, or complexity), stop and tell the user rather than leaving incomplete test functions. The validation script rejects test files that contain `raise NotImplementedError` in test function bodies.
+
 **For infrastructure tasks:**
 
 1. Verify the Dockerfile and test compose are on disk (created in Step 3d as scaffold)

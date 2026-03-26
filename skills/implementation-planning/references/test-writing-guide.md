@@ -72,6 +72,8 @@ Every wiring task doc must include: *"Do not import any class not listed here. D
 
 **Vacuous tests after fixing import errors.** If a test passes against the stub, it's testing nothing.
 
+**Test functions must never contain `raise NotImplementedError`.** Only stubs raise `NotImplementedError` — tests are complete artifacts. Every test function must call the method under test and assert on the result. If the planning model cannot finish writing a test (due to context limits, usage limits, or complexity), it must stop and tell the user rather than leaving a stub test behind. The `validate-stubs.sh` script detects incomplete test functions via AST analysis and rejects them.
+
 ---
 
 ## Writing Tests That Exercise Contracts
@@ -82,6 +84,7 @@ Every wiring task doc must include: *"Do not import any class not listed here. D
 - Exclusion logic: test both sides (excluded absent, non-excluded present)
 - Error handling: assert specific exception type and message
 - Stateful operations: assert the state change, not just absence of errors
+- Format-sensitive return values: when a method's return format matters to downstream consumers (e.g., UUID hex vs dashed string, date format, key format), include a direct test that asserts the exact format, not just a test that uses the value indirectly through a higher-level method. If the format mismatch only surfaces through an integration path, the implementing model gets a confusing failure it can't diagnose within its reflection budget.
 
 ---
 

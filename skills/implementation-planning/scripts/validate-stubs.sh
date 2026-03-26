@@ -72,6 +72,47 @@ export COLUMNS=300
 # These are the ONLY acceptable failure modes against stubs.
 ACCEPTABLE_ERRORS="NotImplementedError|AssertionError"
 
+# ── Vacuous test detection ─────────────────────────────────
+# A test function that contains `raise NotImplementedError` in its own body
+# is a stub test, not a real test. It will pass validate-stubs because
+# NotImplementedError is in the acceptable list, but it doesn't actually
+# test anything — the implementing model gets no feedback.
+# This check runs before pytest to catch incomplete test files early.
+check_vacuous_tests() {
+  local test_file="$1"
+  local vacuous_count=0
+
+  # Find test functions that contain `raise NotImplementedError` in their body.
+  # Pattern: a line starting with `def test_` followed (within a few lines) by
+  # a line containing `raise NotImplementedError` that is NOT inside the code
+  # under test (i.e., it's indented at test-function level, not deeper).
+  # We use awk to detect: def test_xxx(...):\n ... raise NotImplementedError
+  vacuous_count=$(python3 -c "
+import ast, sys
+try:
+    tree = ast.parse(open('$test_file').read())
+except SyntaxError:
+    sys.exit(0)
+count = 0
+for node in ast.walk(tree):
+    if isinstance(node, ast.FunctionDef) and node.name.startswith('test_'):
+        # Check if the function body ends with raise NotImplementedError
+        body = node.body
+        if body:
+            last_stmt = body[-1]
+            if isinstance(last_stmt, ast.Raise) and last_stmt.exc is not None:
+                if isinstance(last_stmt.exc, ast.Name) and last_stmt.exc.id == 'NotImplementedError':
+                    count += 1
+                elif isinstance(last_stmt.exc, ast.Call):
+                    func = last_stmt.exc.func
+                    if isinstance(func, ast.Name) and func.id == 'NotImplementedError':
+                        count += 1
+print(count)
+" 2>/dev/null || echo "0")
+
+  echo "$vacuous_count"
+}
+
 # ── Discover test files ────────────────────────────────────────
 TEST_FILES=$(find "$FULL_TEST_DIR" -name "test_*.py" -type f | sort)
 TOTAL=$(echo "$TEST_FILES" | wc -l | tr -d ' ')
@@ -101,6 +142,20 @@ for TEST_FILE in $TEST_FILES; do
   BASENAME=$(basename "$TEST_FILE")
 
   echo "▶ $REL_PATH"
+
+  # Check for incomplete test functions (test body contains raise NotImplementedError)
+  # Tests must never raise NotImplementedError — only stubs do.
+  VACUOUS=$(check_vacuous_tests "$TEST_FILE")
+  if [[ "$VACUOUS" -gt 0 ]]; then
+    FILE_BAD=$((FILE_BAD + VACUOUS))
+    BAD_FAILURES=$((BAD_FAILURES + VACUOUS))
+    BAD_FILES+=("$REL_PATH")
+    echo "  ❌ $VACUOUS incomplete test function(s) — contain 'raise NotImplementedError'"
+    echo "     Tests must never raise NotImplementedError. Only stubs do."
+    echo "     Complete all test functions before running validation."
+    echo ""
+    continue
+  fi
 
   # Run pytest with --tb=line for parseable failure output
   set +e
