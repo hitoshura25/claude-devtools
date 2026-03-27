@@ -33,7 +33,7 @@ extract_archive(artifact_path, dest_dir)
 
 This rule applies only to **wiring task Behavior sections**. Component tasks use interface contracts and behavioral specs — the model writes the implementation to pass the pre-written tests.
 
-**Interface contracts, not implementation code.** For component tasks: define class/function names, signatures with type annotations, and behavioral specs. No method bodies.
+**Interface contracts, not implementation code.** For component tasks: define class/function names, signatures with type annotations, and behavioral specs. No method bodies. Behavior sections describe **what** each method does (semantics, edge cases, constraints), not **how** it does it (SQL queries, algorithm details, data structure choices). The tests are the authority on correctness — if the tests fully specify the behavior, the model should be free to choose its own implementation. Only include implementation-level detail when the tests cannot catch a mistake (e.g., "use a persistent connection" when the `:memory:` fixture enforces it indirectly but the reason isn't obvious, or "use INSERT OR IGNORE" when the idempotency semantic matters but the test only checks the outcome).
 
 **Tests are on disk, not in the task doc.** Test files are written and validated during implementation planning and saved to disk. Task docs reference the test file by path — they do not embed a copy. Embedding creates a second source of truth that can diverge from the validated file due to LLM non-determinism at generation time.
 
