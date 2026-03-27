@@ -96,7 +96,11 @@ Wiring tasks are now generated upfront with `deferred: false` because interface 
 
 ### Service-Gated Tasks — execution needs live services
 
-Integration tests are **not deferred** — they can be fully written before the run. Mark with `"requires_services"` in the manifest. The runner checks service health and **exits with an error** if services are unavailable — it does not skip.
+Integration tests are **not deferred** — they are fully written during scaffold (by the planning model) and exist on disk before the run. The implementing model creates no files for integration test tasks — it only runs the pre-written tests against live services. If tests fail, the model fixes implementation code from earlier tasks, not the test file.
+
+Mark with `"requires_services"` in the manifest. The runner checks service health and **exits with an error** if services are unavailable — it does not skip.
+
+The task doc for integration tests follows the same pattern as every other task: "do not modify the test file." The manifest entry has `files_created: []` because there is nothing to create.
 
 **Rule for deciding:**
 

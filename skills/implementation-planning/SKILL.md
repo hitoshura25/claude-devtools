@@ -71,6 +71,7 @@ Create these files directly:
 - All package `__init__` files
 - Copy `scripts/lint-ruff-wrapper.sh` → tasks folder as `lint.sh` (or appropriate lint wrapper for the language)
 - A stub file for each task (see Step 4)
+- Integration test file(s) — write the complete integration tests during scaffold, not as an implementing-model deliverable. Integration tests exercise the same code the unit tests cover but against live services. They are service-gated (can't run without services) but must be lint-clean and syntactically valid. Validate with Layer 0 (lint) only.
 
 #### 3d. Infrastructure Scaffold (if applicable)
 

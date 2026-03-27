@@ -79,6 +79,7 @@ Key principles:
 - **Tests are referenced by path, not embedded.** The `## Tests` section points to the on-disk test file path. See `task-template.md` § "Tests".
 - **Component tasks create files only — never modify shared files.**
 - **Infrastructure tasks:** The Dockerfile and test compose are scaffold (already on disk). The model creates only the production compose file.
+- **Integration test tasks:** The test file is scaffold (written by the planning model, already on disk). The implementing model creates **no files** — it only runs the pre-written tests against live services. If tests fail, the model fixes implementation code from earlier tasks, not the test file. The task doc must say "do not modify the test file" and list `files_created: []` in the manifest. This matches the Docker task pattern: the smoke test script is scaffold, the model creates only the production compose.
 
 **Deferred vs service-gated:** See `references/task-doc-guide.md` § "Deferred Tasks vs Service-Gated Tasks".
 
@@ -132,7 +133,7 @@ Create `00-manifest.json`. The `tooling` block holds global defaults. Tasks can 
       "task_id": "8.1",
       "title": "Integration Tests",
       "phase": "Integration Testing",
-      "files_created": ["services/my-service/tests/test_integration.py"],
+      "files_created": [],
       "files_modified": [],
       "test_command": "cd services/my-service && uv run pytest tests/test_integration.py -x -q",
       "test_file": "services/my-service/tests/test_integration.py",
