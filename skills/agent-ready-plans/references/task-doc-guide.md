@@ -43,7 +43,18 @@ This rule applies only to **wiring task Behavior sections**. Component tasks use
 
 **Keep task docs under 2000 tokens.** Small model context windows are limited. Removing embedded test code helps significantly here.
 
-**Break long literals across lines in Behavior sections.** Any string literal or nested dict that could exceed the project line-length limit (typically 88 chars) must be shown in multi-line form in the task doc's Behavior section. The model copies whatever form it reads. Single-line forms that look short may exceed the limit once variable names, indentation, and closing punctuation are added. This applies to SQL queries, Avro/JSON schemas, format strings with interpolations, and nested dict literals. Show them broken across lines; the model will copy the form.
+**Break long literals across lines in Behavior sections.** Any string literal or nested dict that could exceed the project line-length limit (typically 88 chars) must be shown in multi-line form in the task doc's Behavior section. The model copies whatever form it reads. Single-line forms that look short may exceed the limit once variable names, indentation, and closing punctuation are added. This applies to SQL queries, Avro/JSON schemas, format strings with interpolations, and nested dict literals.
+
+**Critical:** When a Behavior section defines module-level SQL constants (or any string constants longer than ~60 chars), show them in a fenced code block using parenthesized multi-line form — NOT as inline prose in a bullet point. Inline prose like `` `_MY_SQL` — `SELECT ... WHERE ...` `` gets copied as a single-line triple-quoted string that exceeds the line-length limit. Instead, show the actual assignment:
+
+```python
+_MY_SQL = (
+    "SELECT uuid_hex FROM seen_uuids"
+    " WHERE uuid_hex IN ({}) AND record_type = ?"
+)
+```
+
+The model copies the form it sees. If it sees a code block with parenthesized string concatenation, it produces lint-clean code on the first call.
 
 ```
 # WRONG — single-line literal exceeds line-length limit after indentation:

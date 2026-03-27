@@ -55,7 +55,9 @@ cleanup() {
   echo "🧹 Tearing down test containers..."
   docker compose -f "$PROJECT_ROOT/$COMPOSE_FILE" down -v --remove-orphans \
     2>/dev/null || true
-  docker system prune -f --filter "label=smoke-test=true" 2>/dev/null || true
+  # Do NOT run `docker system prune` here. It deletes build cache that the
+  # runner's independent verification needs for its rebuild. The compose down
+  # above is sufficient for cleaning up containers and volumes.
 }
 trap cleanup EXIT
 
