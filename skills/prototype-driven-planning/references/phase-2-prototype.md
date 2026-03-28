@@ -31,7 +31,7 @@ The prototype should look like a minimal but real project:
 
 ```
 prototypes/<feature-name>/
-├── README.md              # What this proves, how to run it
+├── README.md              # What this proves, how to run it, toolchain notes
 ├── <entry point>          # main.py, main.ts, etc.
 ├── <supporting files>
 ├── <lint config>          # .ruff.toml, .eslintrc, etc.
@@ -42,7 +42,9 @@ prototypes/<feature-name>/
 
 The README.md is important — it documents what the prototype is for, so anyone (or
 any future model) encountering it understands its purpose without needing the full
-conversation history.
+conversation history. Include a "Toolchain notes" section documenting any surprises
+from lint, test, or container setup (specific lint rules needed, import path quirks,
+Docker entrypoint behavior, etc.). These notes feed directly into the design doc.
 
 ## Running and Iterating
 
@@ -105,22 +107,29 @@ works for this technology and discover any configuration quirks.
 
 ### Minimal Test Setup
 
-Write one test for one piece of core logic. The goal is not test coverage — it's
-proving the test infrastructure works for this technology.
+Write the minimum tests needed to validate the prototype's core logic. The goal is
+not exhaustive coverage — it's proving the test infrastructure works for this
+technology and validating the most important behavior.
 
 **How to approach it:**
 
-1. Pick the most important piece of logic the prototype proved (e.g., a data parser,
-   a conversion function, a query builder).
+1. Identify the core logic the prototype proved — the piece whose correctness
+   matters most.
 2. Check if the project has an existing test framework. If so, use it.
-3. Write one test that validates the chosen logic.
-4. Run it and confirm it passes.
+3. Write minimal tests that validate the chosen logic.
+4. Run them and confirm they pass.
+
+"Minimal" means enough to prove the test toolchain works and the core logic is
+correct — not one test for the sake of one, but not exhaustive coverage either.
+If the prototype has six extractors that all follow the same pattern, testing one
+or two is sufficient. If they each have different conversion logic, test each
+conversion.
 
 **What to capture for the design doc:**
 - Test framework and any plugins needed
 - How imports work (can test files import from the prototype cleanly?)
 - Fixture patterns needed (e.g., in-memory databases, mock services)
-- Any framework-specific gotchas (e.g., Airflow imports need sys.modules patching)
+- Any framework-specific gotchas discovered during setup
 
 **Common trap:** Writing the test is easy; getting the test infrastructure configured
 correctly is where the surprises live. Pay attention to import paths, fixture
@@ -163,10 +172,70 @@ job, or infrastructure component that will be containerized.
 - Health check approach
 - Any build-time gotchas (dependency installation order, layer caching, etc.)
 
+## End-to-End Validation
+
+Running code internally (tests pass, script executes) is necessary but not sufficient.
+The prototype must also work *from the outside* — from the perspective of whatever
+will actually consume it in production.
+
+The shape of this validation depends on what the prototype is:
+
+### Dockerized service or scheduled job
+
+Don't just build the image — prove you can interact with the running container:
+
+- **Service with an API**: Start the container, make a request, get a response.
+  A simple `curl` health check or a single API call is sufficient.
+- **Service with a message queue**: Start the container alongside the broker,
+  publish a message, confirm it's consumed (or the reverse).
+- **Scheduled job / DAG**: Start the runtime environment (e.g., Airflow), trigger
+  the job, confirm it completes. For Airflow specifically, this means the DAG
+  loads and a task runs — not just "the script works when called directly."
+- **Database-backed service**: Start with the real database (or an in-memory
+  equivalent), confirm the service connects and responds.
+
+The goal is to prove the container is a functional unit, not just a packaging step.
+
+### Mobile application
+
+- Build the app (APK/IPA or debug build)
+- Install it on an emulator or device
+- Run a minimal UI test or instrumentation test that confirms a screen renders
+  and basic navigation works
+- If the prototype involves a new screen or feature, the test should exercise that
+  specific screen
+
+This validates the build toolchain, dependency resolution, and basic runtime
+behavior — areas where mobile projects frequently surprise you.
+
+### Library or SDK
+
+- Create a minimal consumer project (or test file) outside the library directory
+  that imports and calls the library's public API
+- Confirm the import resolves and the call produces expected output
+- This catches packaging issues (missing `__init__.py`, incorrect exports,
+  build configuration problems) that internal tests won't reveal
+
+### CLI tool
+
+- Run the tool end-to-end with real (or realistic) input
+- Verify the output matches expectations
+- Test at least one error case (bad input, missing file) to confirm error handling
+  works from the user's perspective
+
+### What to capture
+
+Document the end-to-end validation result in the README under "Toolchain notes" or
+as a separate "End-to-end validation" section. Include:
+- Exactly what was tested (the command run, the request made, the test executed)
+- What the result was
+- Any surprises or configuration needed to make it work
+
 ## Researching Cross-Cutting Concerns
 
-After the core code and toolchain are validated, research remaining concerns. The
-prototype gives you real context — you now know what the technology actually requires.
+After the core code, toolchain, and end-to-end validation are complete, research
+remaining concerns. The prototype gives you real context — you now know what the
+technology actually requires.
 
 ### Security-by-Design
 
@@ -186,7 +255,7 @@ Based on what the prototype revealed about data flow and external interactions:
 
 ### Additional Testing Patterns
 
-Beyond the single test already written, research:
+Beyond the tests already written, research:
 
 - Integration test patterns for this technology
 - Service-gated vs mocked test strategies

@@ -21,7 +21,7 @@ Never skip a pause or combine phases without explicit user approval.
 | Phase | Purpose | Output |
 |-------|---------|--------|
 | 1. Discovery | Understand the project and research the tech | Summary of findings + proposed prototype scope |
-| 2. Tracer Bullet | Build minimum code that proves core risk, validate toolchain | Working prototype in `prototypes/<feature>/` |
+| 2. Tracer Bullet | Build minimum code, validate toolchain, prove it works end-to-end | Working prototype in `prototypes/<feature>/` |
 | 3. Design Doc | Architecture, testing, containers, security, deployment | `docs/design/<feature>.md` |
 
 ## How to Start
@@ -76,31 +76,46 @@ linting, and containerization sections in reality rather than speculation.
 
 4. **Set up lint.** Configure linting for the prototype code, matching the project's
    existing lint tools if it has them. Run the linter and fix until it passes clean.
-   This reveals any lint configuration quirks for the technology being used.
 
-5. **Set up one test.** Write a minimal test for one piece of the prototype's core
-   logic. Configure the test framework (matching the project's existing test setup
-   if applicable). Run it and confirm it passes. This validates that the test
-   infrastructure works for this technology — fixture patterns, imports, mocking
-   boundaries — before the design doc prescribes them.
+5. **Set up minimal tests.** Write the minimum tests needed to validate the
+   prototype's core logic. Configure the test framework (matching the project's
+   existing test setup if applicable). Run and confirm they pass. This validates
+   that the test infrastructure works for this technology — fixture patterns,
+   imports, mocking boundaries — before the design doc prescribes them.
 
 6. **Set up a Dockerfile (if applicable).** Build a Dockerfile that packages the
-   prototype and starts successfully. This is only relevant if the feature involves
-   a deployable service, scheduled job, or infrastructure component. Skip for
-   libraries, utilities, CLI tools, mobile apps, or features that don't need
-   containerization. When applicable, research the base image's official Docker
-   documentation for entrypoint behavior — this is technology-specific and cannot
-   be guessed.
+   prototype and starts successfully. Skip for libraries, CLI tools, mobile apps,
+   or features added to existing services. See the reference doc for detailed
+   criteria on when to include vs skip.
 
-### Step 3: Cross-Cutting Research
+### Step 3: End-to-End Validation
 
-7. **Research cross-cutting concerns.** Now that the core tech and toolchain work,
+The prototype must be proven to work *from the outside*, not just internally.
+The form this takes depends on the project type:
+
+7. **Prove the prototype is usable in the way it will actually be used.** This is
+   technology-dependent:
+   - **Dockerized service**: A health check passes, or a simple request/response
+     succeeds against the running container.
+   - **Mobile app**: The app builds, installs, and a basic UI test confirms a
+     screen renders.
+   - **Library/SDK**: An external consumer can import and call the public API.
+   - **CLI tool**: End-to-end invocation with real input produces expected output.
+   - **Scheduled job/DAG**: The job runs to completion in its runtime environment
+     (e.g., Airflow triggers and completes the DAG, not just "the script runs").
+
+   Running code internally is necessary but not sufficient. The prototype must
+   demonstrate that the thing works from the perspective of its actual consumer.
+
+### Step 4: Cross-Cutting Research
+
+8. **Research cross-cutting concerns.** Now that the core tech and toolchain work,
    research beyond what the prototype already validated:
    - Additional testing patterns (integration tests, service-gated tests)
    - Security-by-design principles relevant to this feature
    - Deployment considerations
 
-**STOP.** Report what the prototype proved (both core logic and toolchain),
+**STOP.** Report what the prototype proved (core logic, toolchain, and end-to-end),
 what you learned from research, and any surprises encountered during setup.
 Wait for user confirmation before proceeding to Phase 3.
 
@@ -134,6 +149,9 @@ and ask for feedback.
   still there for comparison.
 - **Observe, don't predict.** The design doc describes what the prototype proved, not
   what the model thinks might work.
+- **Prove it from the outside.** Running code internally is necessary but not
+  sufficient. The prototype must work from the perspective of its actual consumer —
+  whether that's a health check, a UI test, or an API call.
 - **Research is phase-appropriate.** Phase 1 researches the problem space. Phase 2
   validates the toolchain and researches remaining concerns. Don't front-load
   research on concerns that might not matter.
