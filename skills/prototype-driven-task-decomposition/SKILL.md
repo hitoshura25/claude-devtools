@@ -40,6 +40,26 @@ output.
 Announce: "I'm using the prototype-driven-task-decomposition skill to break down
 the design doc into implementation tasks."
 
+## Environment Setup
+
+The schema validation step (Phase 3) requires `pydantic` to be importable. Rather
+than activating a project venv (which doesn't carry across shell sessions in Claude
+Code), use `uv` to run Python with the pydantic dependency:
+
+```bash
+uv run --with pydantic python -c "
+import sys
+sys.path.insert(0, '<path-to-skill>/scripts')
+from task_schema import TaskDecomposition
+d = TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read())
+print(f'Valid: {len(d.tasks)} tasks')
+"
+```
+
+Check that `uv` is available early (e.g., `which uv`). If `uv` is not available,
+fall back to `pip install pydantic` in a temporary venv or use the system Python
+if pydantic is already installed.
+
 ## Phase 1: Design Doc Analysis
 
 Read `references/analysis-guide.md` for detailed guidance, then:
@@ -123,17 +143,21 @@ Read `references/output-format.md` for detailed guidance on file formats, then:
    - Missing references (task depends on an ID that doesn't exist)
    - Orphan tasks (tasks nothing depends on that aren't leaf tasks)
 
-2. **Write `tasks/<feature-name>/tasks.json`.** This is the machine-readable
+2. **Validate against the PydanticAI schema.** Run the schema validation using
+   `uv run --with pydantic` (see Environment Setup above). Fix any validation
+   errors before writing the final output.
+
+3. **Write `tasks/<feature-name>/tasks.json`.** This is the machine-readable
    output validated against the PydanticAI schema. It's the source of truth for
    the implementation pipeline.
 
-3. **Write individual task markdown files.** Create one
+4. **Write individual task markdown files.** Create one
    `tasks/<feature-name>/task-NN-<slug>.md` per task. These are a human-readable
    view for review and manual editing.
 
-4. **Generate a summary.** Print a table showing: task ID, title, phase,
+5. **Generate a summary.** Print a table showing: task ID, title, phase,
    dependencies, and file count. Include a pointer to the PydanticAI schema
-   (`scripts/task_schema.py`) and a one-line validation command so the user
+   (`scripts/task_schema.py`) and the `uv run` validation command so the user
    can verify the output independently.
 
 **STOP.** Present the task summary table and ask for review. If the user wants

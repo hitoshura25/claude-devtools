@@ -57,8 +57,21 @@ It's the source of truth for the implementation pipeline.
 
 ### Validation
 
-Before writing the JSON file, validate mentally (or explicitly) against these
-constraints from the schema:
+Before writing the JSON file, validate against the PydanticAI schema using `uv`:
+
+```bash
+uv run --with pydantic python -c "
+import sys
+sys.path.insert(0, '<path-to-skill>/scripts')
+from task_schema import TaskDecomposition
+d = TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read())
+print(f'Valid: {len(d.tasks)} tasks')
+for t in d.tasks_in_order():
+    print(f'  {t.id}: {t.title} ({t.phase})')
+"
+```
+
+Also verify mentally against these constraints:
 
 1. Every `depends_on` entry references an existing task `id`
 2. No circular dependencies exist
@@ -145,8 +158,8 @@ After generating all files, print a summary table to the conversation:
 Total: N tasks across M phases
 Dependency depth: K (longest chain from root to leaf)
 
-Schema: The task schema is defined in `scripts/task_schema.py` (PydanticAI).
-To validate: `python -c "from task_schema import TaskDecomposition; TaskDecomposition.model_validate_json(open('tasks.json').read())"`
+Schema: `scripts/task_schema.py` (PydanticAI)
+Validate: `uv run --with pydantic python -c "import sys; sys.path.insert(0,'<skill-path>/scripts'); from task_schema import TaskDecomposition; print(TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read()))"`
 ```
 
 The "dependency depth" metric helps the user understand the critical path.
