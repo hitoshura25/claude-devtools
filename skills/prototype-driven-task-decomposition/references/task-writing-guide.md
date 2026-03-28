@@ -116,54 +116,118 @@ Some tasks don't need prototype references:
 - Config-only tasks (environment variable setup, settings classes)
 - Tasks where the existing codebase — not the prototype — is the reference
 
-## Writing Tests
+## TDD Task Pairs
 
-Each `TestCriterion` tells the implementing model: "Write this test and make it pass."
+Every component with testable logic produces a pair of tasks: a test task
+followed by an implementation task. This is the core structural rule of the
+decomposition — a task never writes both tests and production code.
 
-### Test granularity
+### Why strict separation matters
 
-- **Unit tests**: Test a single function or method in isolation. Mock external
-  dependencies.
-- **Integration tests**: Test how components work together. May need test
-  infrastructure (database, service mocks).
-- **E2E tests**: Test the full flow. These usually go in the `testing` phase tasks,
-  not alongside individual component tasks.
+The planning model (running this skill) understands the full architecture.
+The implementing model (Qwen/Codestral ~30B) sees one task at a time. By
+writing tests first:
 
-### Which tasks get tests?
+1. The planning model's understanding of "correct behavior" is captured as
+   executable tests — not as prose the implementing model might misinterpret.
+2. The implementing model gets immediate, concrete feedback: either the tests
+   pass or they don't. No ambiguity about whether the code is correct.
+3. If the implementing model gets stuck, the failing test output tells it
+   exactly what's wrong — a much tighter feedback loop than vague acceptance
+   criteria.
 
-| Task type | Tests? |
-|-----------|--------|
-| Scaffold (directory setup, config) | Usually no |
-| Core (business logic, data models) | Yes — unit tests |
-| Integration (wiring, endpoints) | Yes — integration tests |
-| Testing (test infrastructure) | No — the task IS the test infrastructure |
-| Infrastructure (Dockerfile, CI) | Maybe — smoke test if relevant |
+### Test task structure
 
-### Tasks verified by downstream tests
+A test task (`task_type: "test"`) writes test files only.
 
-Some integration-phase tasks are hard to unit test meaningfully. For example,
-a DAG wiring task that connects several components may only be verifiable through
-the integration tests written in a later testing-phase task.
+**Files**: Only test files (e.g., `tests/test_extractor.py`, `tests/conftest.py`).
+Never production code.
 
-This is acceptable, but handle it explicitly:
+**Tests field**: Lists the test cases to write. Each `TestCriterion` describes
+one test the model should create.
 
-1. The integration task's `tests` list should be empty (no pretend tests).
-2. The integration task's acceptance criteria should focus on **structural checks**
-   the pipeline can verify without running the full integration: "DAG imports
-   without error", "DAG has exactly 3 tasks", "module-level validation passes".
-3. The integration task's description should note: "End-to-end correctness is
-   verified by task-NN (integration tests)."
-4. The testing-phase task's `depends_on` must include the integration task.
+**Acceptance criteria**:
+- "Test file is syntactically valid and importable"
+- "Tests fail because the implementation module does not exist yet" (or
+  "tests fail because the stub raises NotImplementedError" if a stub exists)
+- "Lint passes with zero errors"
 
-This makes the relationship explicit. The pipeline knows it can only fully verify
-the integration task after the testing task runs, and a human reviewer can see
-the connection clearly.
+**Prototype references**: Point to prototype test files for fixture patterns,
+conftest structure, and test organization.
 
-### Test file placement
+**Security considerations**: Usually empty — security concerns go on the
+implementation task.
 
-Follow the project's existing test convention. If the project puts tests in
-`tests/` at the root, use that. If it co-locates tests with source, do that.
-Don't invent a new convention.
+### Implementation task structure
+
+An implementation task (`task_type: "implementation"`) writes production code
+only.
+
+**Files**: Only production files (e.g., `src/extractor.py`). Never test files.
+
+**Tests field**: Lists the same test criteria as the corresponding test task —
+but now they mean "these existing tests must pass after implementation."
+
+**Depends on**: Must include the corresponding test task, plus any other
+dependency (scaffold, config, other modules it imports from).
+
+**Acceptance criteria**:
+- "All tests in `<test_file>` pass"
+- Feature-specific criteria ("function returns X when given Y")
+- "Lint passes with zero errors"
+
+**Security considerations**: Include relevant security concerns from the
+design doc — this is where they're actionable.
+
+### Example TDD pair
+
+For a SQLite extractor component:
+
+```
+task-03 (test, core): "Write extractor tests"
+  files: [tests/test_extractor.py]
+  tests: [
+    "extract_blood_glucose converts mmol/L to mg/dL by multiplying by 18.0182",
+    "heart rate joins on parent_key=row_id",
+    "since_ms filters records with last_modified_time <= since_ms",
+    ...
+  ]
+  acceptance: ["tests importable", "tests fail — implementation missing", "lint passes"]
+  depends_on: [task-01]
+
+task-04 (implementation, core): "Implement SQLite extractor"
+  files: [plugins/extractors/parse_health_db.py]
+  tests: [same criteria as task-03 — these tests must now pass]
+  acceptance: ["all 15 tests pass", "extract_all returns dict with 6 keys", "lint passes"]
+  depends_on: [task-01, task-03]
+```
+
+### When NOT to create a TDD pair
+
+Some tasks don't have testable logic and only need an `implementation` task:
+
+- **Scaffold tasks**: Creating directories, `__init__.py`, config files
+- **Infrastructure tasks**: Dockerfile, compose files, CI config
+- **Pure configuration**: Environment variable setup, settings classes with
+  no business logic
+
+These tasks use `task_type: "implementation"` with an empty `tests` list.
+The schema allows this — it only enforces TDD pairing when an implementation
+task has tests.
+
+### Integration-level TDD
+
+For integration tasks (e.g., wiring a DAG), the TDD pair looks different:
+
+- The **test task** writes integration tests (e.g., tests that verify messages
+  flow through RabbitMQ end-to-end). These may need test infrastructure
+  (docker-compose for RabbitMQ, fixtures for test data).
+- The **implementation task** writes the wiring code and depends on both the
+  integration test task and all the component tasks it wires together.
+
+If the integration tests need external services (databases, message queues),
+note that in the test task's description so the implementing model sets up
+the right test infrastructure.
 
 ## Writing Acceptance Criteria
 
@@ -171,10 +235,17 @@ Acceptance criteria are the final checkpoint. The implementation pipeline runs
 these checks after the model finishes a task. They must be objectively verifiable —
 no "code is clean" or "follows best practices".
 
-### Required criteria (every task gets these)
+### Criteria by task type
 
-1. **"Lint passes with zero errors"** — The schema enforces this automatically.
-2. **"All tests pass"** — If the task has tests.
+**Test tasks**:
+1. "Test file is syntactically valid and importable"
+2. "Tests fail because implementation does not exist yet" (or similar)
+3. "Lint passes with zero errors"
+
+**Implementation tasks**:
+1. "All tests in `<test_file>` pass"
+2. Feature-specific criteria (see below)
+3. "Lint passes with zero errors"
 
 ### Feature-specific criteria examples
 
@@ -195,16 +266,22 @@ no "code is clean" or "follows best practices".
 
 ## Writing Security Considerations
 
-Pull from the design doc's Security Posture section and distribute to the tasks
-where each concern is actionable.
+Pull from the design doc's Security Posture section and distribute to the
+implementation tasks where each concern is actionable. Security considerations
+go on implementation tasks, not test tasks.
 
 ### Distribution rules
 
-- **Input validation** → Goes on the task that creates the input-handling code
-- **Auth token handling** → Goes on the task that creates the API client
-- **Sensitive data logging** → Goes on any task that adds logging near sensitive data
-- **SQL injection** → Goes on the task that creates database queries
-- **CORS / headers** → Goes on the task that creates the API endpoint
+- **Input validation** → Goes on the implementation task that creates the
+  input-handling code
+- **Auth token handling** → Goes on the implementation task that creates the
+  API client
+- **Sensitive data logging** → Goes on any implementation task that adds
+  logging near sensitive data
+- **SQL injection** → Goes on the implementation task that creates database
+  queries
+- **CORS / headers** → Goes on the implementation task that creates the API
+  endpoint
 
 ### Format
 

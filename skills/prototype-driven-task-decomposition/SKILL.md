@@ -21,6 +21,10 @@ This skill reads a design doc produced by `prototype-driven-planning`, decompose
 it into tasks sized for a single model session, and outputs both human-readable
 markdown and machine-readable JSON validated against a PydanticAI schema.
 
+Tasks follow strict TDD discipline: for every component with testable logic,
+a test task writes the tests first, then an implementation task writes the code
+that makes them pass. A task never writes both tests and production code.
+
 ## Quick Reference
 
 | Input | Output |
@@ -73,7 +77,7 @@ Read `references/analysis-guide.md` for detailed guidance, then:
 
 3. **Identify component boundaries.** The Architecture Overview's "Components"
    section defines the natural task boundaries. Each component typically becomes
-   one or more tasks.
+   a TDD pair: one test task + one implementation task.
 
 4. **Map dependencies.** Determine which components depend on which. This drives
    task ordering. A component that other components import from must be built first.
@@ -86,7 +90,7 @@ Read `references/analysis-guide.md` for detailed guidance, then:
    idempotency strategies. Collect these as explicit numbered questions.
 
 6. **Propose the decomposition.** Present to the user:
-   - How many tasks and in which phases
+   - How many tasks and in which phases (showing TDD pairs)
    - The dependency graph (which tasks block which)
    - Numbered questions for any ambiguities that need resolution
    - Any design doc sections that feel underspecified for task creation
@@ -98,41 +102,49 @@ user to answer the questions and confirm before generating the full task set.
 
 Read `references/task-writing-guide.md` for detailed guidance, then:
 
-1. **Generate tasks** following the schema defined in `scripts/task_schema.py`.
-   Every task must be self-contained — the implementing model receives only its
-   task definition and access to the prototype and codebase. It does NOT see the
-   full design doc or other tasks.
+1. **Generate TDD task pairs** for every component with testable logic. Each pair
+   consists of:
+   - A **test task** (`task_type: "test"`) that writes the test file(s). It creates
+     test files only — never production code. Its acceptance criteria include
+     "tests are importable" and "tests fail because implementation does not exist."
+   - An **implementation task** (`task_type: "implementation"`) that writes the
+     production code. It creates production files only — never test files. It
+     depends on its test task. Its acceptance criteria include "all tests pass."
 
-2. **Assign phases.** Use the `TaskPhase` enum to group tasks:
+   The test task always comes first in the dependency chain. The schema enforces
+   this: an implementation task with tests must depend on at least one test task.
+
+2. **Use `implementation` type for non-testable tasks** like scaffold setup,
+   Dockerfile creation, or deployment config. These don't need a preceding
+   test task.
+
+3. **Assign phases.** Use the `TaskPhase` enum to group tasks:
    - `scaffold` — Project structure, config files, dependency setup
    - `core` — Business logic, data models, core functionality
    - `integration` — Wiring components together, API endpoints, orchestration
    - `testing` — Test infrastructure, fixtures, integration tests
    - `infrastructure` — Dockerfile, CI/CD config, deployment
 
-3. **Set dependencies.** A task's `depends_on` must list every task whose output
+4. **Set dependencies.** A task's `depends_on` must list every task whose output
    files this task needs to exist. Over-specifying dependencies is safer than
-   under-specifying — a missing dependency means a model tries to import something
-   that doesn't exist yet. Include interface dependencies: if a task will import
+   under-specifying. Include interface dependencies: if a task will import
    from another task's module in production, add the dependency so the implementing
-   model can read the real module definition.
+   model can read the real module definition. Implementation tasks must always
+   depend on their corresponding test task.
 
-4. **Reference the prototype.** For each task, identify which prototype files
+5. **Reference the prototype.** For each task, identify which prototype files
    demonstrate relevant patterns. Be specific about what to reference — "the API
-   response parsing at lines 23-31" not "fetch.py".
+   response parsing at lines 23-31" not "fetch.py". Test tasks should reference
+   prototype test files for fixture patterns and test structure.
 
-5. **Write acceptance criteria.** Every task gets at minimum "lint passes" and
-   any relevant test criteria. Add feature-specific criteria too — "endpoint
-   returns 200 for valid input", "config loads from environment variables".
+6. **Write acceptance criteria.** Criteria differ by task type:
+   - **Test tasks**: "test file is importable", "tests fail because implementation
+     does not exist yet", "lint passes"
+   - **Implementation tasks**: "all tests pass", plus feature-specific criteria,
+     "lint passes"
 
-6. **Add security considerations** where relevant. Pull these from the design doc's
-   Security Posture section, distributed to the specific tasks where each concern
-   is actionable.
-
-7. **Handle tasks without direct tests.** Some integration-phase tasks are hard
-   to unit test and rely on downstream testing-phase tasks for verification. This
-   is acceptable — give those tasks structural acceptance criteria and note in
-   their description which testing task verifies them end-to-end.
+7. **Add security considerations** where relevant. These go on implementation
+   tasks (the ones writing the production code), not on test tasks.
 
 ## Phase 3: Validation and Output
 
@@ -141,7 +153,8 @@ Read `references/output-format.md` for detailed guidance on file formats, then:
 1. **Validate the dependency graph.** Check for:
    - Circular dependencies (A depends on B depends on A)
    - Missing references (task depends on an ID that doesn't exist)
-   - Orphan tasks (tasks nothing depends on that aren't leaf tasks)
+   - TDD violations (implementation task with tests that doesn't depend on a
+     test task)
 
 2. **Validate against the PydanticAI schema.** Run the schema validation using
    `uv run --with pydantic` (see Environment Setup above). Fix any validation
@@ -155,7 +168,7 @@ Read `references/output-format.md` for detailed guidance on file formats, then:
    `tasks/<feature-name>/task-NN-<slug>.md` per task. These are a human-readable
    view for review and manual editing.
 
-5. **Generate a summary.** Print a table showing: task ID, title, phase,
+5. **Generate a summary.** Print a table showing: task ID, title, type, phase,
    dependencies, and file count. Include a pointer to the PydanticAI schema
    (`scripts/task_schema.py`) and the `uv run` validation command so the user
    can verify the output independently.
@@ -176,16 +189,22 @@ captures at a glance:
 |-------|---------|
 | `id` | Unique identifier (e.g., `task-01`) |
 | `title` | Action-oriented summary |
+| `task_type` | `test` (writes tests) or `implementation` (writes code, runs tests) |
 | `phase` | Execution grouping (scaffold → core → integration → testing → infrastructure) |
 | `description` | Self-contained context for the implementing model |
 | `depends_on` | Task IDs that must complete first |
 | `files` | Files to create or modify, with descriptions |
 | `prototype_references` | Specific prototype files/patterns to follow |
-| `tests` | Tests that must pass (unit, integration, e2e) |
+| `tests` | Test tasks: cases to write. Implementation tasks: existing tests that must pass |
 | `acceptance_criteria` | Verifiable completion conditions |
 | `security_considerations` | Security concerns and mitigations |
 
 ## Principles
+
+- **Tests first, always.** Every component with testable logic gets a test task
+  before its implementation task. The test task writes tests that fail (because
+  the implementation doesn't exist yet). The implementation task makes them pass.
+  A task never writes both tests and production code.
 
 - **Tasks are self-contained.** The implementing model gets one task at a time.
   It has access to the prototype and the growing codebase, but not the design doc
@@ -207,6 +226,6 @@ captures at a glance:
   module it depends on.
 
 - **Security is distributed.** Don't create a standalone "security task". Instead,
-  attach security considerations to the specific tasks where they're actionable.
-  The model implementing the API client is the one that needs to know about input
-  validation, not a separate security review task.
+  attach security considerations to the implementation tasks where each concern
+  is actionable. The model implementing the API client is the one that needs to
+  know about input validation, not a separate security review task.

@@ -32,7 +32,8 @@ It's the source of truth for the implementation pipeline.
   "tasks": [
     {
       "id": "task-01",
-      "title": "Create project scaffold and package structure",
+      "title": "Create project scaffold",
+      "task_type": "implementation",
       "phase": "scaffold",
       "description": "Set up the directory structure...",
       "depends_on": [],
@@ -40,13 +41,68 @@ It's the source of truth for the implementation pipeline.
         {
           "path": "src/health_sync/__init__.py",
           "operation": "create",
-          "description": "Package init — exports the public API"
+          "description": "Package init"
         }
       ],
       "prototype_references": [],
       "tests": [],
       "acceptance_criteria": [
-        "Package is importable: `import health_sync` succeeds",
+        "Package is importable",
+        "Lint passes with zero errors"
+      ],
+      "security_considerations": []
+    },
+    {
+      "id": "task-02",
+      "title": "Write extractor tests",
+      "task_type": "test",
+      "phase": "core",
+      "description": "Write unit tests for the SQLite extractor...",
+      "depends_on": ["task-01"],
+      "files": [
+        {
+          "path": "tests/test_extractor.py",
+          "operation": "create",
+          "description": "Unit tests for all 6 extraction functions"
+        }
+      ],
+      "tests": [
+        {
+          "description": "extract_blood_glucose converts mmol/L to mg/dL",
+          "test_file": "tests/test_extractor.py",
+          "test_type": "unit"
+        }
+      ],
+      "acceptance_criteria": [
+        "Test file is importable",
+        "Tests fail because implementation does not exist",
+        "Lint passes with zero errors"
+      ],
+      "security_considerations": []
+    },
+    {
+      "id": "task-03",
+      "title": "Implement SQLite extractor",
+      "task_type": "implementation",
+      "phase": "core",
+      "description": "Write the extractor that makes the tests pass...",
+      "depends_on": ["task-01", "task-02"],
+      "files": [
+        {
+          "path": "src/extractor.py",
+          "operation": "create",
+          "description": "SQLite extractor for 6 record types"
+        }
+      ],
+      "tests": [
+        {
+          "description": "extract_blood_glucose converts mmol/L to mg/dL",
+          "test_file": "tests/test_extractor.py",
+          "test_type": "unit"
+        }
+      ],
+      "acceptance_criteria": [
+        "All tests in tests/test_extractor.py pass",
         "Lint passes with zero errors"
       ],
       "security_considerations": []
@@ -67,7 +123,7 @@ from task_schema import TaskDecomposition
 d = TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read())
 print(f'Valid: {len(d.tasks)} tasks')
 for t in d.tasks_in_order():
-    print(f'  {t.id}: {t.title} ({t.phase})')
+    print(f'  {t.id} [{t.task_type}]: {t.title} ({t.phase})')
 "
 ```
 
@@ -75,12 +131,14 @@ Also verify mentally against these constraints:
 
 1. Every `depends_on` entry references an existing task `id`
 2. No circular dependencies exist
-3. Every task has at least one file in `files`
-4. Every task has at least one entry in `acceptance_criteria`
-5. Every task has "lint passes" in acceptance criteria (the schema auto-adds it,
-   but include it explicitly for clarity)
-6. Task IDs are unique
-7. File paths are project-relative (no absolute paths)
+3. Every implementation task with tests depends on at least one test task
+4. Every task has at least one file in `files`
+5. Test tasks only create test files; implementation tasks only create
+   production files
+6. Every task has at least one entry in `acceptance_criteria`
+7. Every task has "lint passes" in acceptance criteria
+8. Task IDs are unique
+9. File paths are project-relative (no absolute paths)
 
 ## Markdown Output (`task-NN-<slug>.md`)
 
@@ -92,6 +150,7 @@ consistent across all tasks for easy scanning.
 ```markdown
 # Task NN: <Title>
 
+**Type**: test | implementation
 **Phase**: <phase>
 **Depends on**: <comma-separated task IDs, or "none">
 
@@ -114,6 +173,9 @@ consistent across all tasks for easy scanning.
 <or "No prototype references for this task." if empty>
 
 ## Tests
+
+<For test tasks: "Test cases to write:">
+<For implementation tasks: "Existing tests that must pass:">
 
 | Test | File | Type |
 |------|------|------|
@@ -149,26 +211,23 @@ After generating all files, print a summary table to the conversation:
 ```
 ## Task Summary: <feature-name>
 
-| ID | Title | Phase | Depends On | Files | Tests |
-|----|-------|-------|------------|-------|-------|
-| task-01 | Create project scaffold | scaffold | — | 4 | 0 |
-| task-02 | Implement data model | core | task-01 | 2 | 3 |
+| ID | Title | Type | Phase | Depends On | Files | Tests |
+|----|-------|------|-------|------------|-------|-------|
+| task-01 | Create scaffold | impl | scaffold | — | 4 | 0 |
+| task-02 | Write extractor tests | test | core | task-01 | 1 | 8 |
+| task-03 | Implement extractor | impl | core | task-01, task-02 | 1 | 8 |
 | ...
 
-Total: N tasks across M phases
+Total: N tasks (T test + I implementation) across M phases
 Dependency depth: K (longest chain from root to leaf)
 
 Schema: `scripts/task_schema.py` (PydanticAI)
-Validate: `uv run --with pydantic python -c "import sys; sys.path.insert(0,'<skill-path>/scripts'); from task_schema import TaskDecomposition; print(TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read()))"`
+Validate: `uv run --with pydantic python -c "..."`
 ```
 
 The "dependency depth" metric helps the user understand the critical path.
 A very deep chain (>5) might indicate over-fragmentation; a very flat graph
 (depth 1-2) might indicate under-decomposition.
-
-The schema pointer and validation command help the user understand the
-relationship between the JSON output and the PydanticAI schema — especially
-useful for people encountering the pipeline for the first time.
 
 ## Interrupted Generation Recovery
 
