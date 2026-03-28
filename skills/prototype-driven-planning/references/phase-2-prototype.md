@@ -231,6 +231,72 @@ as a separate "End-to-end validation" section. Include:
 - What the result was
 - Any surprises or configuration needed to make it work
 
+## Handling Blockers
+
+During prototype validation, you will sometimes hit blockers that require user
+action — credentials, a running service, hardware access, or permissions. This is
+normal and expected for integration risks. The correct response is to ask for help,
+not to silently defer the validation.
+
+### The anti-pattern to avoid
+
+When the model encounters a blocker (e.g., "Docker daemon not running" or "no
+Google Drive credentials"), the temptation is to:
+1. Skip the validation
+2. Note it as "not validated" in the findings
+3. Defer it to the design doc as an "open question" or "manual validation step"
+
+This defeats the purpose of the prototype. The design doc will then speculate about
+the integration instead of observing it — exactly the problem prototype-driven
+planning exists to solve.
+
+### What to do instead
+
+1. **Stop and tell the user what you need.** Be specific: "I need Google Drive
+   service account credentials to validate the download integration. Do you have
+   a service account JSON file I can use?"
+
+2. **Write a smoke test script.** Even if you can't run it yourself, create a small
+   standalone script that the user can run with their credentials. Make it easy:
+   clear environment variable names, a single command to execute, and output that
+   clearly says PASS or FAIL.
+
+3. **Work through the setup together.** If the user provides credentials but the
+   first attempt fails (wrong permissions, wrong file path, API error), iterate
+   together. These failures are *exactly* the discoveries the prototype exists to
+   surface.
+
+4. **Only mark as "not validated" if the user explicitly defers.** If the user says
+   "I don't have credentials for that" or "skip the Drive integration for now,"
+   that's a valid decision. Document it clearly in the Phase 2 report as an
+   unvalidated integration risk that the design doc cannot ground in reality.
+
+### Common blockers and how to handle them
+
+| Blocker | Wrong response | Right response |
+|---|---|---|
+| Credentials not available | "Drive download not validated — deferred to design doc" | "I need a service account JSON. Do you have one? I'll write a smoke test script." |
+| Docker not running | "Alternative validation: import chain test" | "Can you start Docker? I need to run the DAG inside Airflow to validate end-to-end." |
+| External service unreachable | "Mocked the service interaction" | "The RabbitMQ broker needs to be running. Can you start it with `docker compose up rabbitmq`?" |
+| Hardware not available | "Skipped device test" | "I need an Android emulator to validate the UI test. Is one available, or should we defer this specific validation?" |
+
+The key insight: the user is a collaborator, not an observer. They have access to
+credentials, services, and hardware that the model doesn't. Asking for help is
+correct behavior, not a failure.
+
+### When deferral is genuinely OK
+
+Sometimes deferral is the right call:
+- The user explicitly says to skip it
+- The resource genuinely doesn't exist yet (e.g., a production database that
+  hasn't been provisioned)
+- The validation requires infrastructure that's impractical for a prototype
+  (e.g., a full Kubernetes cluster)
+
+In these cases, document the unvalidated risk clearly in the Phase 2 report and
+the design doc. The design doc should flag it as "not validated by prototype —
+this section is based on research, not observation."
+
 ## Researching Cross-Cutting Concerns
 
 After the core code, toolchain, and end-to-end validation are complete, research

@@ -120,6 +120,23 @@ The form this takes depends on the project type:
    Running code internally is necessary but not sufficient. The prototype must
    demonstrate that the thing works from the perspective of its actual consumer.
 
+### Handling Blockers
+
+If any in-scope integration risk cannot be validated because of a missing resource
+(credentials, running service, hardware, etc.):
+
+- **Do NOT silently defer it to the design doc.** The whole point of the prototype
+  is to validate these things *now*. Deferring an in-scope risk to the design doc
+  means the design doc will speculate about it — exactly what this skill exists to
+  prevent.
+- **Ask the user for help.** Tell them what you need (credentials, a running Docker
+  daemon, access to a service) and how to provide it. Write a smoke test script
+  they can configure and run. Work through the setup together.
+- **Only defer if the user explicitly says to skip it.** If the user says "I don't
+  have those credentials" or "skip Drive for now," that's a valid decision. Document
+  it as an unvalidated risk in the Phase 2 report. But the default should be to
+  resolve the blocker, not to work around it.
+
 ### Step 4: Cross-Cutting Research
 
 8. **Research cross-cutting concerns.** Now that the core tech and toolchain work,
@@ -168,6 +185,9 @@ and ask for feedback.
 - **"Seems easy" is not "proven."** If the project hasn't done this exact integration
   before, it's an unvalidated risk. Don't silently dismiss integration boundaries
   as "just configuration" — surface them for the user to decide.
+- **Ask for help, don't silently defer.** When a blocker requires user action
+  (credentials, running services, hardware), ask. The user is a collaborator.
+  Deferring an in-scope risk to the design doc defeats the purpose of prototyping.
 - **Research is phase-appropriate.** Phase 1 researches the problem space. Phase 2
   validates the toolchain and researches remaining concerns. Don't front-load
   research on concerns that might not matter.
