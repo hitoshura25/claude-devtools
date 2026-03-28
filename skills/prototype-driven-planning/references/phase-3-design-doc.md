@@ -13,7 +13,7 @@ than one that says "the API probably returns JSON" based on reading documentatio
 ## Generating the Doc
 
 Use the template in `references/design-doc-template.md` as the structural guide.
-Create the doc at `docs/design/<feature-name>.md`, creating the directory if needed.
+Create the doc at `docs/design/<feature-name>-<YYYY-MM-DD>.md` (using today's date), creating the directory if needed.
 
 ### Section-by-section guidance
 

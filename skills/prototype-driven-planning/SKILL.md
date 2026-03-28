@@ -22,7 +22,7 @@ Never skip a pause or combine phases without explicit user approval.
 |-------|---------|--------|
 | 1. Discovery | Understand the project, map integration boundaries, identify risks | Summary of findings + proposed prototype scope |
 | 2. Tracer Bullet | Build minimum code, validate toolchain, prove it works end-to-end | Working prototype in `prototypes/<feature>/` |
-| 3. Design Doc | Architecture, testing, containers, security, deployment | `docs/design/<feature>.md` |
+| 3. Design Doc | Architecture, testing, containers, security, deployment | `docs/design/<feature>-<YYYY-MM-DD>.md` |
 
 ## How to Start
 
@@ -136,7 +136,7 @@ Wait for user confirmation before proceeding to Phase 3.
 
 Read `references/phase-3-design-doc.md` and `references/design-doc-template.md`, then:
 
-1. **Generate the design doc** at `docs/design/<feature-name>.md` following the
+1. **Generate the design doc** at `docs/design/<feature-name>-<YYYY-MM-DD>.md` (using today's date) following the
    template. Every section must be grounded in the prototype's reality. If the
    prototype didn't touch a concern (e.g., no database), say so — don't speculate.
 
