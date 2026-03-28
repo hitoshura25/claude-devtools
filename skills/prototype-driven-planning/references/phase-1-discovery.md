@@ -27,32 +27,86 @@ be targeted. Start with:
 3. A representative source file in the area where the new feature would live
 4. Existing test files to understand testing patterns
 
-## Identifying Core Technical Risk
+## Identifying Integration Boundaries and Risks
 
-The "core technical risk" is the single technical question whose answer determines
-whether the feature is feasible. Everything else is implementation detail.
+Don't jump straight to "the one core risk." First, map out every integration
+boundary the feature touches — every external service, API, SDK, data format,
+or protocol involved. Then categorize each one.
 
-### Examples of core technical risk
+### Step 1: List all integration boundaries
 
-- "Can we get real-time data from this API within acceptable latency?"
-- "Does this library actually support the data format we need?"
-- "Can the JNI bridge pass complex data structures without corruption?"
-- "Will the ORM handle this query pattern without N+1 problems?"
+Read the feature description carefully. Every verb is a potential integration
+boundary. For example, "Airflow downloads, parses, and feeds data" has three:
+downloading (Google Drive API), parsing (SQLite schema), and feeding (RabbitMQ
+publishing).
 
-### What is NOT core technical risk
+Also consider:
+- External service APIs (REST, gRPC, GraphQL)
+- Authentication/authorization flows (OAuth, service accounts, API keys)
+- Data format parsing (custom schemas, protocols, wire formats)
+- SDK/library integration (does the library actually work as documented?)
+- Infrastructure interaction (Docker, message brokers, databases, cloud services)
+- Framework-specific behavior (Airflow operators, React Native bridges, etc.)
 
-- "Can we write CRUD endpoints?" (yes, always)
+### Step 2: Categorize each boundary
+
+For each integration boundary, ask: **"Has this exact integration been proven to
+work in this project before?"**
+
+- **Unvalidated** — the project has never done this before, OR it uses a library/SDK
+  the project hasn't used before. These carry real risk even if they *seem*
+  straightforward. Include in the prototype scope.
+- **Previously validated** — the project already has working code that does this
+  exact thing (not something similar — the same thing). Can safely defer.
+  Reference the existing code that proves it.
+- **Genuinely trivial** — standard language features with no integration surface
+  area (file I/O, string manipulation, basic data structures). Can safely defer.
+
+The key distinction: **"I think this API is easy to use" is NOT the same as
+"this project has already proven this API works."** The former is an unvalidated
+assumption. OAuth flows, provider-specific SDKs, authentication patterns, and
+framework-specific hooks all have integration surface area that only shows up
+when you actually build against them.
+
+### Step 3: Identify the core risk and integration risks
+
+- **Core technical risk**: The single question whose answer determines feasibility.
+  This is always in scope for the prototype.
+- **Integration risks**: Unvalidated boundaries that are likely to cause implementation
+  problems if not tested. These should be included in the prototype scope unless
+  there's a clear reason to defer (e.g., requires credentials that aren't available,
+  requires hardware that isn't present).
+
+### Examples
+
+**Feature**: "Airflow downloads from Google Drive, parses SQLite, publishes to RabbitMQ"
+
+| Boundary | Category | Reason |
+|---|---|---|
+| SQLite schema parsing | **Core risk** | Unknown schema, custom data formats, unit conversions |
+| Google Drive download | **Integration risk** | Project has never used Google Drive API or `apache-airflow-providers-google` |
+| RabbitMQ publishing | Previously validated | `services/message-queue/publisher/` already does this |
+| Airflow DAG wiring | **Integration risk** | Project has Airflow scaffolding but no proven running DAG |
+
+**Feature**: "Add biometric login to the Android app"
+
+| Boundary | Category | Reason |
+|---|---|---|
+| Biometric prompt API | **Core risk** | Never used, Android version compatibility unknown |
+| Credential storage | **Integration risk** | EncryptedSharedPreferences vs AndroidKeyStore is a real design choice |
+| Navigation to login screen | Previously validated | App already has navigation patterns |
+| Network auth token refresh | Previously validated | App already has token refresh logic |
+
+### What is genuinely NOT a risk
+
+- "Can we write CRUD endpoints?" (yes, always — no integration surface area)
 - "Can we add a new database table?" (yes, always)
-- "Can we write unit tests?" (yes, always)
-- Anything that's standard engineering with known solutions
-
-If the feature has no real technical risk — if it's straightforward CRUD or glue code —
-say so. The prototype phase still has value (it grounds the design doc in reality), but
-the scope can be minimal.
+- "Can we create a new React component?" (yes, always)
+- Anything using only standard language features with no external integration
 
 ## Research
 
-Research should be targeted at the specific technical risk, not broad surveys.
+Research should be targeted at the identified risks, not broad surveys.
 
 ### Good research targets
 
@@ -73,12 +127,22 @@ Summarize findings concisely. Include:
 ## Proposing Prototype Scope
 
 The proposal should be concrete enough that the user can evaluate whether it will
-answer the right question.
+answer the right question. Critically, it must list what is being deferred and why,
+so the user can override.
 
 ### Template for the proposal
 
 ```
 ## Prototype Proposal: <feature-name>
+
+**Integration boundaries identified**:
+
+| Boundary | Category | In prototype? |
+|---|---|---|
+| <boundary 1> | Core risk | Yes |
+| <boundary 2> | Integration risk | Yes |
+| <boundary 3> | Previously validated | No — proven by <existing code reference> |
+| <boundary 4> | Integration risk | No — requires <unavailable resource> |
 
 **Core risk being tested**: <one sentence>
 
@@ -87,10 +151,12 @@ answer the right question.
 - <specific behavior 2>
 
 **What the prototype will NOT do**:
-- No tests
 - No error handling beyond what's needed to run
 - No edge cases
 - <other explicit exclusions>
+
+**Deferred risks** (not in prototype — confirm these are OK to skip):
+- <boundary> — deferred because <reason>. If you want this validated, say so.
 
 **Files to create**:
 - prototypes/<feature-name>/<file1> — <purpose>
@@ -98,3 +164,8 @@ answer the right question.
 
 **How to validate**: <how we'll know it works>
 ```
+
+The "Deferred risks" section is important. It makes the user aware of what is NOT
+being tested and gives them an explicit opportunity to say "actually, include that."
+This prevents the model from silently dismissing integration risks as "just
+configuration."
