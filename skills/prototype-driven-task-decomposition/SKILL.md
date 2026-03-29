@@ -31,6 +31,11 @@ that makes them pass. A task never writes both tests and production code.
 |-------|--------|
 | Design doc at `docs/design/<feature>.md` | `tasks/<feature>/tasks.json` (machine-readable) |
 | Prototype at `prototypes/<feature>/` | `tasks/<feature>/task-NN-<slug>.md` (human-readable) |
+| | `tasks/<feature>/task_schema.py` (PydanticAI schema) |
+
+The output directory is self-contained: `tasks.json`, markdown files, and the
+schema are all co-located so the implementation pipeline can consume the
+directory without knowing where the skill lives.
 
 ## How to Start
 
@@ -53,7 +58,7 @@ Code), use `uv` to run Python with the pydantic dependency:
 ```bash
 uv run --with pydantic python -c "
 import sys
-sys.path.insert(0, '<path-to-skill>/scripts')
+sys.path.insert(0, 'tasks/<feature>')
 from task_schema import TaskDecomposition
 d = TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read())
 print(f'Valid: {len(d.tasks)} tasks')
@@ -156,34 +161,41 @@ Read `references/output-format.md` for detailed guidance on file formats, then:
    - TDD violations (implementation task with tests that doesn't depend on a
      test task)
 
-2. **Validate against the PydanticAI schema.** Run the schema validation using
-   `uv run --with pydantic` (see Environment Setup above). Fix any validation
-   errors before writing the final output.
+2. **Copy `task_schema.py` into the output directory.** Copy the schema from
+   this skill's `scripts/task_schema.py` to `tasks/<feature-name>/task_schema.py`.
+   This makes the output directory self-contained — the implementation pipeline
+   can import the schema directly from the task directory without needing to know
+   where the decomposition skill lives.
 
-3. **Write `tasks/<feature-name>/tasks.json`.** This is the machine-readable
+3. **Validate against the PydanticAI schema.** Run the schema validation using
+   `uv run --with pydantic` against the local copy in the output directory (see
+   Environment Setup above). Fix any validation errors before writing the final
+   output.
+
+4. **Write `tasks/<feature-name>/tasks.json`.** This is the machine-readable
    output validated against the PydanticAI schema. It's the source of truth for
    the implementation pipeline.
 
-4. **Write individual task markdown files.** Create one
+5. **Write individual task markdown files.** Create one
    `tasks/<feature-name>/task-NN-<slug>.md` per task. These are a human-readable
    view for review and manual editing.
 
-5. **Generate a summary.** Print a table showing: task ID, title, type, phase,
-   dependencies, and file count. Include a pointer to the PydanticAI schema
-   (`scripts/task_schema.py`) and the `uv run` validation command so the user
-   can verify the output independently.
+6. **Generate a summary.** Print a table showing: task ID, title, type, phase,
+   dependencies, and file count. Include the `uv run` validation command
+   referencing the local `task_schema.py` so the user can verify independently.
 
 **STOP.** Present the task summary table and ask for review. If the user wants
 changes, iterate on specific tasks. After approval, remind the user:
 - `tasks.json` is the source of truth for the implementation pipeline
+- `task_schema.py` is co-located for self-contained validation and pipeline import
 - Markdown files are a convenience view — edits there won't auto-sync to JSON
 - The prototype directory is referenced but never modified
-- The schema in `scripts/task_schema.py` can validate `tasks.json` independently
 
 ## Schema Reference
 
-The canonical schema lives in `scripts/task_schema.py`. Here's what each task
-captures at a glance:
+The canonical schema lives in `scripts/task_schema.py` and is copied to the
+output directory as `tasks/<feature>/task_schema.py` during Phase 3. Here's
+what each task captures at a glance:
 
 | Field | Purpose |
 |-------|---------|
@@ -229,3 +241,8 @@ captures at a glance:
   attach security considerations to the implementation tasks where each concern
   is actionable. The model implementing the API client is the one that needs to
   know about input validation, not a separate security review task.
+
+- **Output is self-contained.** The `tasks/<feature>/` directory contains
+  everything the implementation pipeline needs: `tasks.json`, `task_schema.py`,
+  and human-readable markdown files. No external references to the skill
+  directory are required at runtime.

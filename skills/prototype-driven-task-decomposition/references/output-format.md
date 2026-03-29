@@ -2,23 +2,44 @@
 
 ## Output Structure
 
-The skill produces this directory structure:
+The skill produces a self-contained directory:
 
 ```
 tasks/<feature-name>/
 ├── tasks.json                    # Machine-readable, schema-validated
+├── task_schema.py                # PydanticAI schema (copied from skill)
 ├── task-01-<slug>.md             # Human-readable view of task 01
 ├── task-02-<slug>.md
 ├── ...
 └── task-NN-<slug>.md
 ```
 
+The output directory contains everything the implementation pipeline needs:
+`tasks.json` for the task definitions, `task_schema.py` for schema validation
+and import, and markdown files for human review. No references back to the
+skill directory are required.
+
 The `<slug>` is derived from the task title by lowercasing, replacing spaces with
 hyphens, and stripping special characters. Keep slugs short (3-4 words max).
 
+## Copying the Schema
+
+Copy `scripts/task_schema.py` (from this skill's directory) into
+`tasks/<feature-name>/task_schema.py`. This is a straight file copy — no
+modifications needed.
+
+The schema location in the skill directory (`scripts/task_schema.py`) remains
+the canonical source. The copy in the output directory is for the pipeline's
+convenience — it can import the schema directly:
+
+```python
+sys.path.insert(0, 'tasks/<feature>')
+from task_schema import TaskDecomposition
+```
+
 ## JSON Output (`tasks.json`)
 
-The JSON file conforms to the `TaskDecomposition` schema in `scripts/task_schema.py`.
+The JSON file conforms to the `TaskDecomposition` schema in `task_schema.py`.
 It's the source of truth for the implementation pipeline.
 
 ### Structure
@@ -113,12 +134,12 @@ It's the source of truth for the implementation pipeline.
 
 ### Validation
 
-Before writing the JSON file, validate against the PydanticAI schema using `uv`:
+After copying the schema and writing `tasks.json`, validate using the local copy:
 
 ```bash
 uv run --with pydantic python -c "
 import sys
-sys.path.insert(0, '<path-to-skill>/scripts')
+sys.path.insert(0, 'tasks/<feature>')
 from task_schema import TaskDecomposition
 d = TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read())
 print(f'Valid: {len(d.tasks)} tasks')
@@ -221,8 +242,8 @@ After generating all files, print a summary table to the conversation:
 Total: N tasks (T test + I implementation) across M phases
 Dependency depth: K (longest chain from root to leaf)
 
-Schema: `scripts/task_schema.py` (PydanticAI)
-Validate: `uv run --with pydantic python -c "..."`
+Output: `tasks/<feature>/` (self-contained — tasks.json + task_schema.py + markdown)
+Validate: `uv run --with pydantic python -c "import sys; sys.path.insert(0,'tasks/<feature>'); from task_schema import TaskDecomposition; print(TaskDecomposition.model_validate_json(open('tasks/<feature>/tasks.json').read()))"`
 ```
 
 The "dependency depth" metric helps the user understand the critical path.
@@ -245,7 +266,8 @@ needs to step away), the skill should be able to resume cleanly:
 - **If the user says "continue"**: Check what exists in `tasks/<feature-name>/`.
   If `tasks.json` is present and valid, generate only missing markdown files
   and print the summary. If `tasks.json` is missing or invalid, regenerate
-  everything.
+  everything. Also check `task_schema.py` exists — re-copy from the skill if
+  missing.
 
 The key principle: `tasks.json` is always written first (it's the source of
 truth). Markdown files are derived from it. If the JSON is intact, recovery
