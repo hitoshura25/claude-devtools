@@ -45,6 +45,19 @@ TASK_SCHEMA = TASKS_DIR / "task_schema.py"
 PROTOTYPE_DIR = PROJECT_ROOT / "prototypes" / "<feature-name>"
 PIPELINE_DIR = Path(__file__).parent
 
+# ── Working Directories ───────────────────────────────────────
+# Service root: the directory where lint/test tools are installed and
+# commands should run from. Detected from the common file path prefix
+# in tasks.json. Most tasks use this as their Aider cwd.
+SERVICE_ROOT = PROJECT_ROOT / "<detected-service-subdir>"
+
+# Per-task working directory overrides. Maps task ID to an absolute path.
+# Tasks not listed here use SERVICE_ROOT.
+# Infrastructure/deployment tasks often need the project root instead.
+TASK_WORKING_DIRS: dict[str, str] = {
+    # "task-26": str(PROJECT_ROOT),  # Dockerfile at project root
+}
+
 # ── Model ──────────────────────────────────────────────────────
 # Model tiers for escalation. v1 uses only the first tier.
 # v2 will add cloud fallback tiers here.
@@ -61,21 +74,24 @@ MODEL_TIERS = [
 MAX_RETRIES_PER_TASK = 3  # Circuit breaker: mark as failed after this many
 
 # ── Tooling ────────────────────────────────────────────────────
-DEFAULT_LINT_CMD = "<detected-lint-command>"
-TEST_RUNNER = "<detected-test-runner>"  # e.g., "pytest", "uv run pytest"
+# Lint and test commands run from the task's working directory.
+# They should be bare tool names that work from that directory —
+# the pipeline sets Aider's cwd to the working directory so
+# locally-installed tools are naturally on PATH.
+DEFAULT_LINT_CMD = "<detected-lint-command>"  # e.g., "ruff check"
+TEST_RUNNER = "<detected-test-runner>"        # e.g., "pytest"
 GLOBAL_TEST_CMD = "<detected-global-test-command>"  # full suite
 
-# Per-task test commands derived from tasks.json test_file paths.
-# Format: {"task-id": "test command" or None}
-# None means this task has no test gate (lint only).
+# Per-task test commands. File paths are relative to the task's
+# working directory (after rebasing from project-root-relative).
+# None means no test gate for this task.
 TASK_TEST_COMMANDS: dict[str, str | None] = {
     # Generated from Phase 1 analysis
 }
 
-# Per-task lint command overrides.
-# None means use DEFAULT_LINT_CMD.
+# Per-task lint command overrides. None means skip lint.
 TASK_LINT_OVERRIDES: dict[str, str | None] = {
-    # Infrastructure tasks may override with hadolint, etc.
+    # Infrastructure tasks may skip lint or use a different linter
 }
 
 # ── Aider ──────────────────────────────────────────────────────
@@ -88,7 +104,54 @@ AIDER_EXTRA_ARGS = [
 ```
 
 Fill in the placeholder values from Phase 1 detection. Use absolute paths for
-`PROJECT_ROOT` so the pipeline can run from any working directory.
+`PROJECT_ROOT` and `SERVICE_ROOT` so the pipeline can run from any working
+directory.
+
+### Working Directory and Path Rebasing
+
+The critical pattern: Aider's cwd determines where lint/test tools are found
+and how file paths are interpreted. The pipeline must rebase file paths from
+`tasks.json` (which are relative to project root) to be relative to the task's
+working directory.
+
+The `aider_bridge.py` module handles this rebasing. For each task:
+1. Determine the working directory (from `TASK_WORKING_DIRS` or default `SERVICE_ROOT`)
+2. For each file in the task's `files` list, strip the working directory
+   prefix (relative to project root) to get the path relative to the cwd
+3. Pass the rebased paths as `--file` arguments to Aider
+4. Rebase test file paths the same way for `--test-cmd`
+
+Example:
+```
+SERVICE_ROOT = PROJECT_ROOT / "services/airflow-ingestion"
+task file:    "services/airflow-ingestion/plugins/client.py"  (from tasks.json)
+service prefix: "services/airflow-ingestion/"
+rebased:       "plugins/client.py"                            (for --file)
+aider cwd:     /abs/path/services/airflow-ingestion/
+```
+
+The `verify_task` node also uses the same working directory when running
+lint and test commands independently after Aider finishes.
+
+### Environment Isolation
+
+The pipeline itself may run in its own virtual environment (for langgraph,
+pydantic). To prevent this environment from leaking into Aider and verification
+subprocesses, the `aider_bridge.py` should strip environment variables that
+could cause confusion:
+
+```python
+env = os.environ.copy()
+# Remove pipeline's own venv to prevent it from shadowing
+# the service's tooling installation
+for var in ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT"):
+    env.pop(var, None)
+```
+
+This is not Python-specific — any language ecosystem that uses environment
+variables for tool resolution (e.g., `NODE_PATH`, `GOPATH`) may need similar
+treatment. The principle: the subprocess should see the service directory's
+tooling environment, not the pipeline's.
 
 ### `pipeline_state.py`
 
@@ -148,7 +211,9 @@ a self-contained markdown message file that Aider receives via `--message-file`.
 
 The prompt must include everything the implementing model needs:
 1. **Task description** — from the task's `description` field
-2. **Files to create** — from `files`, with operation (create/modify) and descriptions
+2. **Files to create** — from `files`, with operation (create/modify) and
+   descriptions. Use the **rebased** paths (relative to the task's working
+   directory) so the model sees the same paths Aider is using.
 3. **Inlined prototype references** — for each entry in `prototype_references`,
    read the referenced file from the prototype directory and extract the relevant
    section. Include the actual code, not just a pointer.
@@ -172,8 +237,12 @@ code. Verification is a separate node so the graph structure is clean.
 Runs lint and test commands independently after Aider finishes. This catches
 silent failures (Aider reflection exhaustion exits 0 even when tests fail).
 
+**Important:** Verification commands must run from the same working directory
+as Aider used for that task. Use the same cwd resolution logic.
+
 Logic:
-1. Run lint command. If it fails, mark lint_passed = False.
+1. Run lint command from the task's working directory. If it fails, mark
+   lint_passed = False.
 2. If the task has a test command:
    - For implementation tasks: run the test command, expect exit 0.
    - For test tasks: run the test command, expect non-zero exit (tests should
@@ -193,37 +262,62 @@ Generates the final summary after all tasks are processed. Includes:
 Subprocess wrapper that builds and executes the Aider CLI command. Separated
 from the node so it can be tested independently.
 
-Key function: `build_command(task, config)` → returns the full command list.
+Key responsibilities:
+1. **Rebase file paths** from project-root-relative to cwd-relative
+2. **Build the Aider command** with rebased paths
+3. **Run the subprocess** with the correct cwd and clean environment
+4. **Detect reflection exhaustion** from Aider output
 
 ```python
+def get_task_working_dir(task_id: str) -> str:
+    """Return the absolute working directory for a task."""
+    override = config.TASK_WORKING_DIRS.get(task_id)
+    if override:
+        return override
+    return str(config.SERVICE_ROOT)
+
+def rebase_path(file_path: str, working_dir: str) -> str:
+    """Rebase a project-root-relative path to be relative to working_dir.
+
+    Example:
+        file_path:   "services/my-service/plugins/client.py"
+        working_dir: "/abs/path/services/my-service"
+        project_root: "/abs/path"
+        service_prefix: "services/my-service/"
+        result:      "plugins/client.py"
+    """
+    project_root = str(config.PROJECT_ROOT)
+    abs_file = os.path.join(project_root, file_path)
+    return os.path.relpath(abs_file, working_dir)
+
 def build_command(
     task: dict,
-    model: str,
-    api_base: str,
-    api_key: str,
-    message_file: str,
+    message_file_path: str,
+    model_tier: dict,
     lint_cmd: str | None,
     test_cmd: str | None,
+    working_dir: str,
     extra_args: list[str],
 ) -> list[str]:
-    """Build the aider CLI command for a task."""
+    """Build the aider CLI command with rebased file paths."""
     cmd = [
         "aider",
-        "--model", model,
-        "--openai-api-base", api_base,
-        "--openai-api-key", api_key,
-        "--message-file", message_file,
+        "--model", model_tier["model"],
+        "--openai-api-base", model_tier["api_base"],
+        "--openai-api-key", model_tier["api_key"],
+        "--message-file", message_file_path,
     ]
 
-    # Add files to edit
+    # Files: rebase from project-root-relative to cwd-relative
     for f in task.get("files", []):
-        cmd.extend(["--file", f["path"]])
+        rebased = rebase_path(f["path"], working_dir)
+        cmd.extend(["--file", rebased])
 
     # Lint
     if lint_cmd:
         cmd.extend(["--lint-cmd", lint_cmd, "--auto-lint"])
 
-    # Test (implementation tasks only — test tasks skip --auto-test)
+    # Test (implementation tasks only)
     if test_cmd and task.get("task_type") == "implementation":
         cmd.extend(["--test-cmd", test_cmd, "--auto-test"])
 

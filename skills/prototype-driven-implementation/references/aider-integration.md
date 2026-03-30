@@ -12,18 +12,40 @@ Each task is a single `--message-file` invocation that exits after processing.
 | `--model` | LLM to use | `openai/<model-name>` or `lm_studio/<model-name>` |
 | `--openai-api-base` | LM Studio endpoint | `http://localhost:1234/v1` |
 | `--openai-api-key` | API key (LM Studio doesn't validate) | `lm-studio` |
-| `--message-file` | Task prompt file | `/tmp/pipeline-task-<id>.md` |
-| `--file` | Files Aider can edit | One per file in the task's `files` list |
+| `--message-file` | Task prompt file | Absolute path to composed prompt |
+| `--file` | Files Aider can edit | Paths relative to Aider's cwd |
 | `--yes-always` | Skip all confirmations | (flag only) |
 | `--no-git` | Pipeline manages git, not Aider | (flag only) |
 | `--no-check-update` | Don't check for Aider updates | (flag only) |
 | `--no-show-model-warnings` | Suppress model compatibility warnings | (flag only) |
 
+### Working Directory and File Path Behavior
+
+Aider runs all commands (lint, test, file editing) from its cwd. This has
+two important consequences:
+
+1. **`--file` paths are relative to cwd.** If Aider's cwd is
+   `/project/services/my-service/` and you want it to edit
+   `plugins/client.py`, pass `--file plugins/client.py`.
+
+2. **`--lint-cmd` appends edited filenames relative to cwd.** After editing
+   `plugins/client.py`, Aider runs `<lint-cmd> plugins/client.py`. The lint
+   tool must be findable from that cwd (on PATH, in a local node_modules/.bin,
+   in a venv, etc.).
+
+This is why the pipeline sets Aider's cwd to the **service root** (the
+directory where lint/test tools are installed), not the project root. The
+pipeline rebases file paths from tasks.json (project-root-relative) to be
+relative to the service root before passing them to Aider.
+
+See `phase-2-generation.md` § "Working Directory and Path Rebasing" for the
+rebasing implementation.
+
 ### Lint Flags
 
 | Flag | Purpose | Notes |
 |------|---------|-------|
-| `--lint-cmd` | Lint command | Aider appends edited filenames |
+| `--lint-cmd` | Lint command | Aider appends edited filenames (cwd-relative) |
 | `--auto-lint` | Run lint after each change | On by default, but explicit is clearer |
 
 Aider's lint integration: after the model edits files, Aider runs
@@ -81,6 +103,10 @@ Aider's stdout for "reflections allowed, stopping" and marks the task as
 The `compose_prompt` node transforms a task's JSON into a markdown message
 file. This is what the implementing model (Qwen/Codestral) actually reads.
 
+**File paths in the prompt** should use the rebased (cwd-relative) paths, not
+the project-root-relative paths from tasks.json. This way the model writes file
+content using the same paths Aider sees.
+
 ### Prompt Template
 
 ```markdown
@@ -92,8 +118,8 @@ file. This is what the implementing model (Qwen/Codestral) actually reads.
 
 ## Files to Create
 
-<For each file in task.files:>
-- **`<file.path>`** (<file.operation>): <file.description>
+<For each file in task.files, using REBASED paths:>
+- **`<rebased_path>`** (<file.operation>): <file.description>
 
 ## Reference Code
 
@@ -188,34 +214,72 @@ on retry.
 
 ## Building the Aider Command
 
-The `aider_bridge.py` module constructs the full command. Here's the logic:
+The `aider_bridge.py` module constructs and runs the Aider CLI command. Its
+key responsibility is **rebasing file paths** from project-root-relative
+(as stored in tasks.json) to cwd-relative (as Aider expects).
 
 ```python
+import os
+import subprocess
+from pathlib import Path
+
+import config
+
+
+def get_task_working_dir(task_id: str) -> str:
+    """Return the absolute working directory for a task.
+
+    Most tasks use the service root. Infrastructure or deployment tasks
+    may override to use the project root or another directory.
+    """
+    return config.TASK_WORKING_DIRS.get(task_id, str(config.SERVICE_ROOT))
+
+
+def rebase_path(file_path: str, working_dir: str) -> str:
+    """Rebase a project-root-relative path to be relative to working_dir.
+
+    tasks.json stores paths relative to the project root.
+    Aider needs paths relative to its cwd (the working directory).
+    This function converts between the two.
+
+    Example:
+        file_path:   "services/my-service/plugins/client.py"
+        working_dir: "/abs/project/services/my-service"
+        result:      "plugins/client.py"
+    """
+    abs_file = os.path.join(str(config.PROJECT_ROOT), file_path)
+    return os.path.relpath(abs_file, working_dir)
+
+
 def build_command(
     task: dict,
     message_file_path: str,
-    model_tier: dict,      # From config.MODEL_TIERS
-    lint_cmd: str | None,  # Effective lint for this task
-    test_cmd: str | None,  # Effective test for this task
-    extra_args: list[str], # From config.AIDER_EXTRA_ARGS
+    model_tier: dict,
+    lint_cmd: str | None,
+    test_cmd: str | None,
+    working_dir: str,
+    extra_args: list[str],
 ) -> list[str]:
+    """Build the aider CLI command with rebased file paths."""
     cmd = [
         "aider",
         "--model", model_tier["model"],
         "--openai-api-base", model_tier["api_base"],
         "--openai-api-key", model_tier["api_key"],
-        "--message-file", message_file_path,
+        "--message-file", message_file_path,  # absolute path is fine
     ]
 
-    # Files Aider can edit
+    # Files: rebase from project-root-relative to cwd-relative
     for f in task.get("files", []):
-        cmd.extend(["--file", f["path"]])
+        rebased = rebase_path(f["path"], working_dir)
+        cmd.extend(["--file", rebased])
 
-    # Lint (always, for both test and implementation tasks)
+    # Lint (both test and implementation tasks)
     if lint_cmd:
         cmd.extend(["--lint-cmd", lint_cmd, "--auto-lint"])
 
-    # Test (implementation tasks only)
+    # Test (implementation tasks only — test tasks should fail, so
+    # --auto-test would cause an infinite fix loop)
     if test_cmd and task.get("task_type") == "implementation":
         cmd.extend(["--test-cmd", test_cmd, "--auto-test"])
 
@@ -226,13 +290,21 @@ def build_command(
 ### Running the Command
 
 ```python
-import subprocess
-import os
-
 def run_aider(cmd: list[str], working_dir: str, log_file) -> tuple[int, str, str]:
-    """Run Aider and capture output."""
+    """Execute the Aider command with a clean environment.
+
+    The environment is sanitized to prevent the pipeline's own virtual
+    environment from interfering with the service's tooling.
+    """
     env = os.environ.copy()
-    # LM Studio doesn't need a real key, but Aider's OpenAI client requires one
+
+    # Prevent pipeline's venv from leaking into Aider's subprocess.
+    # Aider and the lint/test tools need to find the SERVICE's tooling,
+    # not the pipeline's langgraph/pydantic installation.
+    for var in ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT"):
+        env.pop(var, None)
+
+    # LM Studio doesn't validate keys, but Aider's OpenAI client requires one
     env.setdefault("OPENAI_API_KEY", "lm-studio")
 
     try:
@@ -244,16 +316,39 @@ def run_aider(cmd: list[str], working_dir: str, log_file) -> tuple[int, str, str
             timeout=600,
             env=env,
         )
-        # Log full output
         log_file.write(result.stdout)
-        log_file.write(result.stderr)
-
+        if result.stderr:
+            log_file.write("\n--- stderr ---\n")
+            log_file.write(result.stderr)
         return result.returncode, result.stdout, result.stderr
 
     except subprocess.TimeoutExpired:
-        return -1, "", "Aider timed out after 600 seconds"
+        msg = "Aider timed out after 600 seconds"
+        log_file.write(f"\n[TIMEOUT] {msg}\n")
+        return -1, "", msg
     except FileNotFoundError:
-        return -1, "", "aider command not found"
+        msg = "aider command not found — install with: pip install aider-chat"
+        log_file.write(f"\n[ERROR] {msg}\n")
+        return -1, "", msg
+```
+
+### Verification Commands
+
+The `verify_task` node runs lint and test commands independently. These must
+use the **same working directory** as the Aider invocation for that task:
+
+```python
+def run_verification(cmd: str, working_dir: str, timeout: int = 120):
+    """Run a lint or test command from the task's working directory."""
+    env = os.environ.copy()
+    for var in ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT"):
+        env.pop(var, None)
+
+    result = subprocess.run(
+        cmd, cwd=working_dir, capture_output=True,
+        text=True, timeout=timeout, shell=True, env=env,
+    )
+    return result.returncode, result.stdout, result.stderr
 ```
 
 ### Message File Lifecycle
@@ -262,8 +357,6 @@ The composed prompt is written to a temp file that persists for the duration
 of the task (including retries):
 
 ```python
-import tempfile
-
 def write_prompt(content: str, task_id: str, pipeline_dir: str) -> str:
     """Write prompt to a file in the pipeline's tmp directory."""
     tmp_dir = os.path.join(pipeline_dir, "tmp")
