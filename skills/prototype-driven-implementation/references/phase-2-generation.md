@@ -16,6 +16,7 @@ pipelines/<feature-name>/
 │   ├── compose_prompt.py      # Build message file for Aider
 │   ├── execute_task.py        # Invoke Aider subprocess
 │   ├── verify_task.py         # Independent lint/test verification
+│   ├── bootstrap.py           # Tooling environment initialization
 │   └── report.py              # Final summary
 ├── aider_bridge.py            # Aider subprocess wrapper
 ├── requirements.txt           # langgraph, pydantic
@@ -26,8 +27,7 @@ pipelines/<feature-name>/
 
 ### `config.py`
 
-This file is the single place for all configurable values. Generate it from
-what Phase 1 detected.
+Single place for all configurable values. Generated from Phase 1 detection.
 
 ```python
 """Pipeline configuration — all settings in one place.
@@ -46,21 +46,25 @@ PROTOTYPE_DIR = PROJECT_ROOT / "prototypes" / "<feature-name>"
 PIPELINE_DIR = Path(__file__).parent
 
 # ── Working Directories ───────────────────────────────────────
-# Service root: the directory where lint/test tools are installed and
-# commands should run from. Detected from the common file path prefix
-# in tasks.json. Most tasks use this as their Aider cwd.
+# Service root: the directory where lint/test tools are installed.
+# Most tasks use this as their Aider cwd.
 SERVICE_ROOT = PROJECT_ROOT / "<detected-service-subdir>"
 
-# Per-task working directory overrides. Maps task ID to an absolute path.
-# Tasks not listed here use SERVICE_ROOT.
-# Infrastructure/deployment tasks often need the project root instead.
-TASK_WORKING_DIRS: dict[str, str] = {
-    # "task-26": str(PROJECT_ROOT),  # Dockerfile at project root
-}
+# Per-task working directory overrides.
+# Scaffold tasks automatically use PROJECT_ROOT (service dir may not exist).
+# Override here for other special cases.
+TASK_WORKING_DIRS: dict[str, str] = {}
+
+# ── Scaffold Bootstrap ────────────────────────────────────────
+# After the scaffold task creates the project config file, the pipeline
+# runs this command to initialize the tooling environment (install deps,
+# make lint/test tools available). Without this, subsequent tasks cannot
+# run lint or tests.
+BOOTSTRAP_AFTER_TASK = "<scaffold-task-id>"   # e.g., "task-01"
+BOOTSTRAP_COMMAND = "<detected-bootstrap>"    # e.g., "uv sync", "npm install"
+BOOTSTRAP_WORKING_DIR = str(SERVICE_ROOT)
 
 # ── Model ──────────────────────────────────────────────────────
-# Model tiers for escalation. v1 uses only the first tier.
-# v2 will add cloud fallback tiers here.
 MODEL_TIERS = [
     {
         "name": "local",
@@ -71,28 +75,19 @@ MODEL_TIERS = [
 ]
 
 # ── Retry Limits ───────────────────────────────────────────────
-MAX_RETRIES_PER_TASK = 3  # Circuit breaker: mark as failed after this many
+MAX_RETRIES_PER_TASK = 3
 
 # ── Tooling ────────────────────────────────────────────────────
-# Lint and test commands run from the task's working directory.
-# They should be bare tool names that work from that directory —
-# the pipeline sets Aider's cwd to the working directory so
-# locally-installed tools are naturally on PATH.
+# Bare tool names that work from the service root directory.
 DEFAULT_LINT_CMD = "<detected-lint-command>"  # e.g., "ruff check"
 TEST_RUNNER = "<detected-test-runner>"        # e.g., "pytest"
-GLOBAL_TEST_CMD = "<detected-global-test-command>"  # full suite
+GLOBAL_TEST_CMD = "<detected-global-test-command>"
 
-# Per-task test commands. File paths are relative to the task's
-# working directory (after rebasing from project-root-relative).
-# None means no test gate for this task.
-TASK_TEST_COMMANDS: dict[str, str | None] = {
-    # Generated from Phase 1 analysis
-}
+# Per-task test commands (paths relative to task's working dir).
+TASK_TEST_COMMANDS: dict[str, str | None] = {}
 
-# Per-task lint command overrides. None means skip lint.
-TASK_LINT_OVERRIDES: dict[str, str | None] = {
-    # Infrastructure tasks may skip lint or use a different linter
-}
+# Per-task lint overrides. None = skip lint for that task.
+TASK_LINT_OVERRIDES: dict[str, str | None] = {}
 
 # ── Aider ──────────────────────────────────────────────────────
 AIDER_EXTRA_ARGS = [
@@ -103,60 +98,70 @@ AIDER_EXTRA_ARGS = [
 ]
 ```
 
-Fill in the placeholder values from Phase 1 detection. Use absolute paths for
-`PROJECT_ROOT` and `SERVICE_ROOT` so the pipeline can run from any working
-directory.
+Fill in all placeholder values from Phase 1. Use absolute paths for
+`PROJECT_ROOT` and `SERVICE_ROOT`.
 
-### Working Directory and Path Rebasing
+### Scaffold Tasks and Working Directory
 
-The critical pattern: Aider's cwd determines where lint/test tools are found
-and how file paths are interpreted. The pipeline must rebase file paths from
-`tasks.json` (which are relative to project root) to be relative to the task's
-working directory.
+Scaffold tasks create the service directory itself — they can't run from a
+directory that doesn't exist yet. The `aider_bridge.get_task_working_dir()`
+function handles this automatically:
 
-The `aider_bridge.py` module handles this rebasing. For each task:
-1. Determine the working directory (from `TASK_WORKING_DIRS` or default `SERVICE_ROOT`)
-2. For each file in the task's `files` list, strip the working directory
-   prefix (relative to project root) to get the path relative to the cwd
-3. Pass the rebased paths as `--file` arguments to Aider
-4. Rebase test file paths the same way for `--test-cmd`
+```python
+def get_task_working_dir(task_id: str) -> str:
+    """Determine working directory for a task.
 
-Example:
+    Scaffold tasks run from project root (service dir may not exist yet).
+    All other tasks run from service root (where tools are installed).
+    """
+    if task_id in config.TASK_WORKING_DIRS:
+        return config.TASK_WORKING_DIRS[task_id]
+
+    # Scaffold tasks: check phase from the loaded tasks
+    task = _find_task_by_id(task_id)
+    if task and task.get("phase") == "scaffold":
+        return str(config.PROJECT_ROOT)
+
+    return str(config.SERVICE_ROOT)
+```
+
+For scaffold tasks running from the project root:
+- File paths are NOT rebased (they're already project-root-relative)
+- Lint is typically skipped (tools aren't installed yet)
+- No test gate
+
+After the scaffold task passes, the `bootstrap` node runs the environment
+initialization command, making tools available for all subsequent tasks.
+
+### Path Rebasing
+
+For non-scaffold tasks, file paths from tasks.json (project-root-relative)
+must be rebased to be relative to the service root:
+
 ```
 SERVICE_ROOT = PROJECT_ROOT / "services/airflow-ingestion"
-task file:    "services/airflow-ingestion/plugins/client.py"  (from tasks.json)
-service prefix: "services/airflow-ingestion/"
-rebased:       "plugins/client.py"                            (for --file)
-aider cwd:     /abs/path/services/airflow-ingestion/
+task file:    "services/airflow-ingestion/plugins/client.py"  (tasks.json)
+rebased:      "plugins/client.py"                              (for --file)
+aider cwd:    /abs/path/services/airflow-ingestion/
 ```
 
-The `verify_task` node also uses the same working directory when running
-lint and test commands independently after Aider finishes.
+The `verify_task` node uses the same working directory for lint/test commands.
 
 ### Environment Isolation
 
-The pipeline itself may run in its own virtual environment (for langgraph,
-pydantic). To prevent this environment from leaking into Aider and verification
-subprocesses, the `aider_bridge.py` should strip environment variables that
-could cause confusion:
+Strip the pipeline's own venv from subprocess environments:
 
 ```python
 env = os.environ.copy()
-# Remove pipeline's own venv to prevent it from shadowing
-# the service's tooling installation
 for var in ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT"):
     env.pop(var, None)
 ```
 
-This is not Python-specific — any language ecosystem that uses environment
-variables for tool resolution (e.g., `NODE_PATH`, `GOPATH`) may need similar
-treatment. The principle: the subprocess should see the service directory's
-tooling environment, not the pipeline's.
+This prevents the pipeline's langgraph/pydantic venv from shadowing the
+service's tooling. Applies to any language ecosystem that uses environment
+variables for tool resolution.
 
 ### `pipeline_state.py`
-
-The LangGraph state that flows through the graph. Every node reads from and
-writes to this shared state.
 
 ```python
 """Pipeline state — the data that flows through the LangGraph graph."""
@@ -172,163 +177,75 @@ class TaskResult(TypedDict):
 
 class PipelineState(TypedDict):
     # Set by load_tasks
-    all_tasks: list[dict]              # Raw task dicts from tasks.json
-    task_order: list[str]              # Task IDs in topological order
+    all_tasks: list[dict]
+    task_order: list[str]
     feature_name: str
 
-    # Managed by the execution loop
-    current_task_id: str | None        # ID of task being executed
-    current_retry: int                 # Retry count for current task
-    task_results: dict[str, TaskResult]  # task_id -> result
+    # Execution loop
+    current_task_id: str | None
+    current_retry: int
+    task_results: dict[str, TaskResult]
 
-    # Prompt file management
-    current_prompt_path: str | None    # Path to current message file
+    # Prompt management
+    current_prompt_path: str | None
+
+    # Error context for retry prompts
+    current_lint_errors: str
+    current_test_errors: str
+
+    # Bootstrap tracking
+    bootstrap_done: bool
 
     # Terminal state
     is_complete: bool
-    summary: str                       # Final report text
+    summary: str
 ```
 
 ### `graph.py`
 
-The StateGraph definition. See `references/langgraph-patterns.md` for the
-full graph structure. The key design: a loop that picks the next unprocessed
-task, executes it via Aider, verifies the result, and either advances or retries.
+See `references/langgraph-patterns.md` for the full graph structure including
+the bootstrap node.
 
 ### `nodes/load_tasks.py`
 
-Reads `tasks.json`, validates against the schema, and produces the topological
-execution order. Sets `all_tasks` and `task_order` in state.
-
-Key implementation detail: import the schema from `tasks/<feature>/task_schema.py`
-by adding the tasks directory to `sys.path`. Use the schema's `tasks_in_order()`
-method for topological sorting — don't reimplement it.
+Reads `tasks.json`, validates against the schema, produces topological order.
+Import the schema from `tasks/<feature>/task_schema.py` by adding the tasks
+directory to `sys.path`. Use the schema's `tasks_in_order()` method.
 
 ### `nodes/compose_prompt.py`
 
-This is the most important node. It transforms a task's JSON definition into
-a self-contained markdown message file that Aider receives via `--message-file`.
+Transforms task JSON into a self-contained markdown message file for Aider.
+See `references/aider-integration.md` § "Prompt Template" for the format.
 
-The prompt must include everything the implementing model needs:
-1. **Task description** — from the task's `description` field
-2. **Files to create** — from `files`, with operation (create/modify) and
-   descriptions. Use the **rebased** paths (relative to the task's working
-   directory) so the model sees the same paths Aider is using.
-3. **Inlined prototype references** — for each entry in `prototype_references`,
-   read the referenced file from the prototype directory and extract the relevant
-   section. Include the actual code, not just a pointer.
-4. **Acceptance criteria** — from `acceptance_criteria`
-5. **Security considerations** — from `security_considerations` (if any)
-6. **Output constraint** — tell the model to respond with only file changes
-
-See `references/aider-integration.md` § "Prompt Template" for the exact format.
+For scaffold tasks (cwd = project root), use the original project-root-relative
+file paths. For all other tasks (cwd = service root), use rebased paths.
 
 ### `nodes/execute_task.py`
 
-Invokes Aider via the `aider_bridge.py` wrapper. Reads the current task from
-state, gets the Aider arguments from `aider_bridge.build_command()`, and runs
-the subprocess. Captures stdout/stderr for logging.
-
-This node does NOT verify results — it only runs Aider and captures its exit
-code. Verification is a separate node so the graph structure is clean.
+Invokes Aider via `aider_bridge`. Does NOT verify — that's `verify_task`.
 
 ### `nodes/verify_task.py`
 
-Runs lint and test commands independently after Aider finishes. This catches
-silent failures (Aider reflection exhaustion exits 0 even when tests fail).
+Independent lint/test verification using the same working directory as Aider.
+Catches reflection exhaustion (Aider exits 0 but tests still fail).
 
-**Important:** Verification commands must run from the same working directory
-as Aider used for that task. Use the same cwd resolution logic.
+### `nodes/bootstrap.py`
 
-Logic:
-1. Run lint command from the task's working directory. If it fails, mark
-   lint_passed = False.
-2. If the task has a test command:
-   - For implementation tasks: run the test command, expect exit 0.
-   - For test tasks: run the test command, expect non-zero exit (tests should
-     fail because implementation doesn't exist yet).
-3. Update `task_results` in state based on outcomes.
+Runs the tooling bootstrap command after the scaffold task. Triggered once,
+tracked via `bootstrap_done` in state. See `references/langgraph-patterns.md`
+§ "Scaffold Tasks and Working Directory" for the implementation.
 
 ### `nodes/report.py`
 
-Generates the final summary after all tasks are processed. Includes:
-- Count of passed, failed, skipped, degraded tasks
-- Per-task status table
-- Failed task details (error summary, retry count)
-- Whether the global test suite passes (run `GLOBAL_TEST_CMD` as final check)
+Final summary with pass/fail/skip/degraded counts. Runs `GLOBAL_TEST_CMD`
+as a final sanity check.
 
 ### `aider_bridge.py`
 
-Subprocess wrapper that builds and executes the Aider CLI command. Separated
-from the node so it can be tested independently.
-
-Key responsibilities:
-1. **Rebase file paths** from project-root-relative to cwd-relative
-2. **Build the Aider command** with rebased paths
-3. **Run the subprocess** with the correct cwd and clean environment
-4. **Detect reflection exhaustion** from Aider output
-
-```python
-def get_task_working_dir(task_id: str) -> str:
-    """Return the absolute working directory for a task."""
-    override = config.TASK_WORKING_DIRS.get(task_id)
-    if override:
-        return override
-    return str(config.SERVICE_ROOT)
-
-def rebase_path(file_path: str, working_dir: str) -> str:
-    """Rebase a project-root-relative path to be relative to working_dir.
-
-    Example:
-        file_path:   "services/my-service/plugins/client.py"
-        working_dir: "/abs/path/services/my-service"
-        project_root: "/abs/path"
-        service_prefix: "services/my-service/"
-        result:      "plugins/client.py"
-    """
-    project_root = str(config.PROJECT_ROOT)
-    abs_file = os.path.join(project_root, file_path)
-    return os.path.relpath(abs_file, working_dir)
-
-def build_command(
-    task: dict,
-    message_file_path: str,
-    model_tier: dict,
-    lint_cmd: str | None,
-    test_cmd: str | None,
-    working_dir: str,
-    extra_args: list[str],
-) -> list[str]:
-    """Build the aider CLI command with rebased file paths."""
-    cmd = [
-        "aider",
-        "--model", model_tier["model"],
-        "--openai-api-base", model_tier["api_base"],
-        "--openai-api-key", model_tier["api_key"],
-        "--message-file", message_file_path,
-    ]
-
-    # Files: rebase from project-root-relative to cwd-relative
-    for f in task.get("files", []):
-        rebased = rebase_path(f["path"], working_dir)
-        cmd.extend(["--file", rebased])
-
-    # Lint
-    if lint_cmd:
-        cmd.extend(["--lint-cmd", lint_cmd, "--auto-lint"])
-
-    # Test (implementation tasks only)
-    if test_cmd and task.get("task_type") == "implementation":
-        cmd.extend(["--test-cmd", test_cmd, "--auto-test"])
-
-    cmd.extend(extra_args)
-    return cmd
-```
-
-Note: Aider's `--model` flag for LM Studio uses the format
-`openai/<model-name>` with `--openai-api-base` pointing to the LM Studio
-endpoint. The exact format depends on the Aider version, so also support
-the `lm_studio/<model-name>` format seen in the agent-ready-plans skill.
+Subprocess wrapper. Key functions: `get_task_working_dir()`, `rebase_path()`,
+`build_command()`, `run_aider()`, `run_verification()`,
+`detect_reflection_exhaustion()`. See `references/aider-integration.md` for
+the full implementation.
 
 ### `run.py`
 
@@ -340,16 +257,18 @@ Entry point with CLI argument parsing:
 Usage:
     python run.py                    # Run all tasks
     python run.py --start task-05    # Resume from task-05
-    python run.py --dry-run          # Walk the graph without invoking Aider
     python run.py --model <string>   # Override the model
+    python run.py --max-retries 5    # Override retry limit
 """
 ```
 
 Supports:
-- `--start <task-id>` — skip tasks before this ID (for resuming)
-- `--dry-run` — walk the graph, print what would execute, don't invoke Aider
+- `--start <task-id>` — skip tasks before this ID (for resuming after fixes)
 - `--model <model-string>` — override the model from config
 - `--max-retries <N>` — override retry limit
+
+No `--dry-run` flag. A dry-run that skips real execution creates false
+confidence. Phase 3 validates the pipeline through precondition checks instead.
 
 ### `requirements.txt`
 
@@ -358,39 +277,26 @@ langgraph>=0.2.0
 pydantic>=2.0.0
 ```
 
-The pipeline should work with these minimal dependencies. LangGraph pulls in
-langchain-core, but the pipeline doesn't use LangChain models — it uses Aider
-as the execution backend.
-
 ### `README.md`
 
-Generate a README specific to this feature's pipeline. Include:
-- What the pipeline does
-- Prerequisites (Aider, LM Studio, model loaded)
-- How to install dependencies
-- How to run (all tasks, resume, dry-run)
-- How to read results
-- Configuration reference (what each config.py value does)
-- Troubleshooting (common failures and fixes)
+Feature-specific README with prerequisites, run commands, config reference,
+and troubleshooting.
 
 ## Generation Principles
 
-- **Generate concrete code, not templates.** The pipeline files should be
-  runnable Python, not templates with placeholders. Fill in all config values
-  from Phase 1 detection.
+- **Generate concrete code, not templates.** Fill in all config values from
+  Phase 1. No placeholders in the runnable code.
 
-- **Match the project's Python style.** If the project uses type hints,
-  f-strings, pathlib — match that in the pipeline code. If it's more
-  conservative, match that.
+- **Import the task schema, don't reinvent it.** Use `task_schema.py` from
+  the tasks directory.
 
-- **Import the task schema, don't reinvent it.** The pipeline's `load_tasks.py`
-  imports from `task_schema.py` in the tasks directory. Don't redefine task
-  models in the pipeline.
+- **Keep nodes focused.** One responsibility per node. Clean boundaries
+  enable v2 escalation as a localized graph change.
 
-- **Keep nodes focused.** Each node does one thing. `execute_task` runs Aider.
-  `verify_task` checks results. Don't merge them — the graph structure needs
-  clean node boundaries for v2 escalation.
-
-- **Log everything.** The pipeline should produce a timestamped log file at
+- **Log everything.** Timestamped log file at
   `pipelines/<feature>/logs/run-<timestamp>.log` with full Aider output,
   verification results, and state transitions.
+
+- **Run without interruption.** Scaffold → bootstrap → execute is seamless.
+  The user starts the pipeline and walks away. Intervention is only needed
+  when tasks exhaust retries.

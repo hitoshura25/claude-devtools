@@ -72,16 +72,20 @@ Read `references/phase-1-analysis.md` for detailed guidance, then:
    For example, a task with `test_file: "tests/test_client.py"` gets
    `pytest tests/test_client.py -x`. Tasks with no tests get no test gate.
 
-4. **Check model availability.** Verify that LM Studio (or the configured
-   model endpoint) is reachable. If not, note it as a prerequisite but don't
-   block — the user can start LM Studio before running the pipeline.
+4. **Identify the scaffold bootstrap.** Look at the scaffold-phase tasks.
+   If any task creates a project config file (`pyproject.toml`, `package.json`,
+   `build.gradle`, etc.), the pipeline must run a tooling bootstrap command
+   after that task completes (e.g., `uv sync`, `npm install`, `./gradlew build`).
+   Determine the bootstrap command from the project's language and tooling.
+   Without this step, lint and test tools won't be available for subsequent tasks.
 
-5. **Check Aider availability.** Verify `aider` is on the PATH. If not,
-   note the installation instructions.
+5. **Check model and Aider availability.** Verify LM Studio is reachable and
+   `aider` is on the PATH. Note any missing prerequisites.
 
 **STOP.** Present the analysis:
 - Task summary (count by phase and type)
 - Detected lint command and test runner
+- Bootstrap command and which task triggers it
 - Per-task test command derivations (so the user can verify)
 - Model endpoint and Aider status
 - Any issues or ambiguities
@@ -99,7 +103,7 @@ Read `references/phase-2-generation.md` for detailed guidance, then:
    `references/aider-integration.md` for how to invoke Aider.
 
    The files to generate:
-   - `run.py` — Entry point with CLI arguments (`--start`, `--dry-run`, `--model`)
+   - `run.py` — Entry point with CLI arguments (`--start`, `--model`)
    - `config.py` — Model endpoint, retry limits, paths, detected tooling
    - `pipeline_state.py` — LangGraph TypedDict state definition
    - `graph.py` — StateGraph definition with nodes and edges
@@ -121,6 +125,8 @@ Read `references/phase-2-generation.md` for detailed guidance, then:
    - Paths to `tasks.json`, prototype directory, project root
    - Retry limits (default: 3 per task)
    - The per-task test command map (derived in Phase 1)
+   - The scaffold bootstrap config (which task, what command)
+   - Per-task working directory assignments
 
 4. **Generate the prompt composer.** The `compose_prompt.py` node turns a task's
    JSON definition into a self-contained markdown message file for Aider. This
@@ -132,16 +138,17 @@ Read `references/phase-2-generation.md` for detailed guidance, then:
 decisions made during generation (e.g., "Detected ruff as linter, configured
 `ruff check` as lint command"). Wait for user review.
 
-## Phase 3: Dry Run & Handoff
+## Phase 3: Validation & Handoff
 
 Read `references/phase-3-handoff.md` for detailed guidance, then:
 
 1. **Syntax check.** Run `python -m py_compile` on all generated `.py` files.
    Fix any syntax errors.
 
-2. **Dry run.** Run `python run.py --dry-run` from the pipeline directory. This
-   should load tasks.json, walk the graph without invoking Aider, and report
-   the task execution order. Verify the output makes sense.
+2. **Precondition validation.** Verify the pipeline's configuration is
+   consistent: all task IDs in test command maps exist in tasks.json, working
+   directory paths are derivable, the service root prefix matches task file
+   paths, and the bootstrap command is configured for the right task.
 
 3. **Present run instructions.** Tell the user:
    - How to start LM Studio with the right model
@@ -185,3 +192,14 @@ pipeline, review results, and iterate as needed.
 - **Independent verification.** After Aider exits, the pipeline runs lint and
   tests independently. Aider might silently give up (reflection exhaustion) —
   the pipeline catches this.
+
+- **Run without interruption.** The pipeline should be able to execute all
+  tasks from start to finish without manual intervention. Scaffold tasks that
+  create project config files trigger automatic tooling bootstraps (e.g.,
+  `uv sync`, `npm install`). The user should only need to intervene when a
+  task exhausts its retries.
+
+- **No dry-run divergence.** The pipeline does not have a `--dry-run` mode.
+  A dry-run that skips real execution creates a false sense of validation.
+  Phase 3 validates the pipeline through precondition checks and syntax
+  verification instead.

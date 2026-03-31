@@ -2,25 +2,26 @@
 
 ## Graph Structure
 
-The pipeline is a task execution loop with verification and circuit breakers.
+The pipeline is a task execution loop with verification, circuit breakers,
+and a tooling bootstrap step after scaffold tasks.
 
 ```
-                          ┌──────────────────────────────────────────┐
-                          │                                          │
+                          ┌──────────────────────────────────────────────────────┐
+                          │                                                      │
 START ──→ load_tasks ──→ pick_next_task ──→ compose_prompt ──→ execute_task ──→ verify_task
                                ↑                                                     │
                                │                          ┌──────────────────────────┤
                                │                          │                          │
                                │                     task passed              task failed
                                │                          │                          │
-                               │                          │               retries < max?
-                               │                          │                ┌────┴────┐
-                               │                          │              yes         no
-                               │                          │               │          │
-                               │                          │          retry_task   mark_failed
-                               │                          │               │          │
-                               │                          ▼               │          │
-                               ├──────────────────── (back to pick) ◄────┘          │
+                               │                     needs bootstrap?     retries < max?
+                               │                      ┌───┴───┐           ┌────┴────┐
+                               │                    yes        no        yes         no
+                               │                     │         │          │          │
+                               │                  bootstrap    │     retry_task  mark_failed
+                               │                     │         │          │          │
+                               │                     ▼         ▼          │          │
+                               ├──────────────── (back to pick) ◄────────┘          │
                                │                                                    │
                                ├────────────────────────────────────────────────────┘
                                │
@@ -29,6 +30,48 @@ START ──→ load_tasks ──→ pick_next_task ──→ compose_prompt ─
                                ▼
                             report ──→ END
 ```
+
+## Scaffold Tasks and Working Directory
+
+Scaffold tasks present a chicken-and-egg problem: they create the service
+directory and project config files, but Aider needs a `cwd` to run from,
+and lint/test tools aren't available until the tooling environment is
+bootstrapped.
+
+The pipeline handles this in two steps:
+
+### Step 1: Scaffold tasks run from the project root
+
+Scaffold tasks (tasks with `phase: "scaffold"`) that create the service
+directory itself must run from the **project root**, not the service root.
+The service root doesn't exist yet — Aider creates it as part of the task.
+
+For scaffold tasks:
+- `cwd` = project root
+- `--file` paths are project-root-relative (no rebasing needed)
+- `--lint-cmd` is typically skipped (no tools installed yet)
+
+### Step 2: Bootstrap after scaffold
+
+After the scaffold task that creates the project config file (e.g.,
+`pyproject.toml`, `package.json`), the pipeline runs a **bootstrap command**
+to initialize the tooling environment. This is configured in `config.py`:
+
+```python
+# Bootstrap: run after the scaffold task that creates the project config.
+# This initializes the service's tooling environment so lint/test commands
+# work for all subsequent tasks.
+BOOTSTRAP_AFTER_TASK = "task-01"  # The scaffold task ID
+BOOTSTRAP_COMMAND = "uv sync"     # or "npm install", "./gradlew build", etc.
+BOOTSTRAP_WORKING_DIR = str(SERVICE_ROOT)  # Run from the newly-created service dir
+```
+
+The bootstrap is a node in the graph that runs between `verify_task` (for
+the scaffold task) and `pick_next_task` (for the next task). It's only
+triggered once, for the specific task configured in `BOOTSTRAP_AFTER_TASK`.
+
+After bootstrap completes, all subsequent tasks use the service root as
+their working directory, and lint/test tools are available.
 
 ## StateGraph Definition Pattern
 
@@ -45,6 +88,7 @@ def build_graph() -> StateGraph:
     graph.add_node("compose_prompt", compose_prompt_node)
     graph.add_node("execute_task", execute_task_node)
     graph.add_node("verify_task", verify_task_node)
+    graph.add_node("bootstrap", bootstrap_node)
     graph.add_node("retry_task", retry_task_node)
     graph.add_node("mark_failed", mark_failed_node)
     graph.add_node("report", report_node)
@@ -64,12 +108,20 @@ def build_graph() -> StateGraph:
     graph.add_edge("compose_prompt", "execute_task")
     graph.add_edge("execute_task", "verify_task")
 
-    # Verify → pass (pick next) or fail (retry or mark failed)
+    # Verify → pass (maybe bootstrap, then pick next) or fail (retry/mark)
     graph.add_conditional_edges(
         "verify_task",
         route_after_verify,
-        {"passed": "pick_next_task", "retry": "retry_task", "exhausted": "mark_failed"},
+        {
+            "passed": "pick_next_task",
+            "passed_needs_bootstrap": "bootstrap",
+            "retry": "retry_task",
+            "exhausted": "mark_failed",
+        },
     )
+
+    # Bootstrap → pick next
+    graph.add_edge("bootstrap", "pick_next_task")
 
     # Retry loops back to compose (rebuild prompt with error context)
     graph.add_edge("retry_task", "compose_prompt")
@@ -98,7 +150,8 @@ def route_after_pick(state: PipelineState) -> str:
 
 ### `route_after_verify`
 
-Decides what to do after verification: advance, retry, or give up.
+Decides what to do after verification: advance (with optional bootstrap),
+retry, or give up.
 
 ```python
 def route_after_verify(state: PipelineState) -> str:
@@ -106,15 +159,46 @@ def route_after_verify(state: PipelineState) -> str:
     result = state["task_results"][task_id]
 
     if result["status"] == "passed":
+        # Check if this task triggers a bootstrap
+        if task_id == config.BOOTSTRAP_AFTER_TASK and not state.get("bootstrap_done"):
+            return "passed_needs_bootstrap"
         return "passed"
 
-    if state["current_retry"] < MAX_RETRIES_PER_TASK:
+    if state["current_retry"] < config.MAX_RETRIES_PER_TASK:
         return "retry"
 
     return "exhausted"
 ```
 
 ## Node Implementation Patterns
+
+### bootstrap
+
+Runs the tooling environment initialization command after the scaffold task.
+
+```python
+def bootstrap_node(state: PipelineState) -> dict:
+    """Initialize the service's tooling environment.
+
+    Runs after the scaffold task creates the project config file.
+    This makes lint/test tools available for all subsequent tasks.
+    """
+    cmd = config.BOOTSTRAP_COMMAND
+    working_dir = config.BOOTSTRAP_WORKING_DIR
+    print(f"[bootstrap] Running: {cmd} (in {working_dir})")
+
+    rc, stdout, stderr = run_command(cmd, working_dir)
+    if rc != 0:
+        print(f"[bootstrap] WARNING: bootstrap failed (exit {rc})")
+        print(f"  stdout: {stdout[:500]}")
+        print(f"  stderr: {stderr[:500]}")
+        # Don't crash the pipeline — lint/test failures downstream
+        # will surface the problem clearly
+    else:
+        print("[bootstrap] Tooling environment initialized successfully")
+
+    return {"bootstrap_done": True}
+```
 
 ### pick_next_task
 
@@ -141,7 +225,6 @@ def pick_next_task_node(state: PipelineState) -> dict:
         if not deps_ok:
             # Skip — dependency failed
             return {
-                "current_task_id": None,  # Will be set after marking skip
                 "task_results": {
                     **state["task_results"],
                     task_id: {
@@ -168,6 +251,36 @@ Note: The skip logic above is simplified. In practice, `pick_next_task` should
 loop past skipped tasks until it finds an eligible one or runs out. Handle
 this by having the routing function check `is_complete` separately from
 `current_task_id`.
+
+### Working directory per task
+
+The `execute_task` and `verify_task` nodes use `aider_bridge.get_task_working_dir()`
+to determine the correct cwd for each task. The logic:
+
+```python
+def get_task_working_dir(task_id: str) -> str:
+    """Determine the working directory for a task.
+
+    Scaffold tasks run from the project root (the service dir may not exist yet).
+    All other tasks run from the service root (where lint/test tools are installed).
+    Per-task overrides in config take priority.
+    """
+    # Explicit override
+    if task_id in config.TASK_WORKING_DIRS:
+        return config.TASK_WORKING_DIRS[task_id]
+
+    # Scaffold tasks: service dir may not exist yet, use project root
+    task = _find_task_by_id(task_id)
+    if task and task.get("phase") == "scaffold":
+        return str(config.PROJECT_ROOT)
+
+    # All other tasks: use service root
+    return str(config.SERVICE_ROOT)
+```
+
+Scaffold tasks don't need path rebasing (their file paths are project-root-
+relative, and Aider's cwd is the project root). All other tasks get their
+paths rebased to be relative to the service root.
 
 ### retry_task
 
@@ -232,45 +345,11 @@ return {
 return {"task_results": {task_id: new_result}}
 ```
 
-## Dry Run Mode
-
-The graph supports a `--dry-run` flag by having `execute_task` check a config
-flag and skip Aider invocation:
-
-```python
-def execute_task_node(state: PipelineState) -> dict:
-    task_id = state["current_task_id"]
-    task = next(t for t in state["all_tasks"] if t["id"] == task_id)
-
-    if DRY_RUN:
-        print(f"  [DRY RUN] Would execute: {task['title']}")
-        print(f"            Files: {[f['path'] for f in task['files']]}")
-        # Mark as passed so the graph continues
-        return {
-            "task_results": {
-                **state["task_results"],
-                task_id: {
-                    "task_id": task_id,
-                    "status": "passed",
-                    "retries": 0,
-                    "lint_passed": True,
-                    "test_passed": True,
-                    "error_summary": "",
-                },
-            },
-        }
-
-    # ... actual Aider invocation
-```
-
-In dry-run mode, `verify_task` is also skipped (the task is already marked
-passed by `execute_task`). The routing function sees "passed" and moves on.
-
 ## Error Handling
 
-Wrap all subprocess calls (Aider, lint, test) in try/except. A crashed
-subprocess should not crash the pipeline — it should be treated as a task
-failure and enter the retry/escalation flow.
+Wrap all subprocess calls (Aider, lint, test, bootstrap) in try/except. A
+crashed subprocess should not crash the pipeline — it should be treated as a
+task failure and enter the retry/escalation flow.
 
 ```python
 try:
