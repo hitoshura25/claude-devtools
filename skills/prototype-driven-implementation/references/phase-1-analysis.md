@@ -33,20 +33,14 @@ After validation, extract these metrics for the user:
 ### Why Working Directory Matters
 
 This is the single most important detection step. Aider runs lint and test
-commands from whatever `cwd` it's given. Lint tools (ruff, eslint, ktlint) and
-test runners (pytest, jest, gradle) are typically installed local to a service
-or package directory — not globally. If Aider runs from the project root but
-the tools are only available inside `services/my-service/`, every lint and test
-invocation will fail with "command not found."
+commands as subprocess calls from whatever `cwd` it's given. Lint tools and
+test runners are typically installed local to a service or package directory —
+not globally. If the tools aren't on PATH from the working directory, every
+lint and test invocation will fail with "command not found."
 
 Additionally, Aider appends edited filenames as paths relative to its cwd to
 the lint command. This is a documented Aider behavior that the pipeline must
 account for (see Aider issue #1579 for monorepo context).
-
-The pipeline must determine the correct working directory for each task's
-Aider invocation. When Aider's cwd matches the service directory, lint and
-test tools installed there are on the PATH, and file paths are relative to
-that directory.
 
 ### Determining the Service Root
 
@@ -61,78 +55,68 @@ To detect it:
 3. Verify this directory contains tooling config (e.g., `pyproject.toml`,
    `package.json`, `build.gradle`, `Makefile`)
 
-If tasks span multiple directories (e.g., some files in `services/my-service/`
-and others in `deployment/`), you need per-task working directory assignment.
-See "Per-Task Working Directory" below.
+### Tooling Command Detection — The Critical Rule
 
-### Lint Command Detection
+**Commands must work as isolated subprocess calls from the service root with
+no activated environment.** Aider and the pipeline run tools via
+`subprocess.run(cmd, cwd=service_root)`. No venv is activated. No `.bashrc`
+is sourced. The command must be self-contained.
 
-Once the service root is identified, check for tooling config within it:
+This means bare tool names like `ruff` or `pytest` will NOT work if they're
+installed in a project-local virtual environment. Each language ecosystem has
+its own mechanism for invoking locally-installed tools:
 
-1. **`pyproject.toml [tool.ruff]`** or **`ruff.toml`** → `ruff check`
-2. **`.flake8`** or **`setup.cfg [flake8]`** → `flake8`
-3. **`package.json`** with eslint dependency → `npx eslint`
-4. **`build.gradle*`** with ktlint → `ktlint`
+| Ecosystem | Tool invocation pattern | Example lint | Example test |
+|-----------|------------------------|-------------|-------------|
+| Python + uv | `uv run <tool>` | `uv run ruff check` | `uv run pytest tests/foo.py -x` |
+| Python + pip/venv | Activate or use full path | `.venv/bin/ruff check` | `.venv/bin/pytest tests/foo.py -x` |
+| Node/npm | `npx <tool>` | `npx eslint` | `npx jest tests/foo.test.ts` |
+| Node/yarn | `yarn <tool>` | `yarn eslint` | `yarn jest tests/foo.test.ts` |
+| Gradle | `./gradlew <task>` | `./gradlew ktlintCheck` | `./gradlew test --tests Foo` |
+| Go | Tools are compiled binaries | `golangci-lint run` | `go test ./...` |
+| Rust | `cargo <cmd>` | `cargo clippy` | `cargo test` |
 
-The lint command should be a bare tool name (e.g., `ruff check`) that works
-when run from the service root. Do NOT use absolute paths or `cd` wrappers —
-set Aider's cwd to the service root instead, so the tool is naturally on PATH.
+**Detection steps:**
 
-**Verify it works:** Run the detected lint command from the service root
-directory and confirm it exits cleanly on an existing file. If it fails with
-"command not found," the tool isn't installed or isn't on PATH from that
-directory. Ask the user how to invoke it.
+1. Identify the language ecosystem from the service root's config files
+2. Determine the tool runner for that ecosystem (see table above)
+3. Identify the specific lint tool and test framework configured
+4. Compose the full command: `<runner> <tool> <args>`
 
-Also check whether the prototype created a lint wrapper script — look in
-`prototypes/<feature>/` for `lint.sh` or similar. If one exists, note it as
-an alternative.
+For example, a Python project using uv with ruff and pytest:
+- Detect: `pyproject.toml` with `[tool.ruff]` and `[tool.pytest.ini_options]`
+- Detect: `uv.lock` exists → this is a uv-managed project
+- Lint command: `uv run ruff check` (not `ruff check`)
+- Test command: `uv run pytest <files> -x` (not `pytest <files> -x`)
 
-### Test Runner Detection
+**Verification:** After detection, actually run the lint command from the
+service root on an existing file to confirm it works. If the service root
+doesn't exist yet (scaffold hasn't run), verify against the prototype
+directory instead — the prototype has the same tooling config.
 
-Check within the service root for:
+```bash
+cd prototypes/<feature>/
+uv run ruff check --version  # Should print ruff version, not "not found"
+```
 
-1. **`pyproject.toml [tool.pytest]`** or **`pytest.ini`** or **`conftest.py`**
-   → test framework is `pytest`
-2. **`package.json`** with jest dependency → `jest`
-3. **`build.gradle*`** with test tasks → JUnit/Kotlin test
+### Per-Task Working Directory
 
-### Language Detection
-
-Infer from task file paths:
-- `.py` files → Python
-- `.ts`/`.js` files → TypeScript/JavaScript
-- `.kt` files → Kotlin
-
-## Per-Task Working Directory
-
-Most tasks share the same service root as their working directory. But some
-tasks (infrastructure, deployment) may create files outside the service tree.
+Most tasks share the service root as their working directory. But some tasks
+(infrastructure, deployment) may create files outside the service tree.
 
 For each task, determine the working directory:
-
-1. Look at the task's `files` list
+1. If `phase == "scaffold"` → cwd = project root (service dir doesn't exist yet)
 2. If all files share the service root prefix → cwd = service root
-3. If files are at the project root (e.g., `docker-compose.yml`,
-   `Dockerfile` at root) → cwd = project root
-4. If files span multiple directories → cwd = their common ancestor
+3. If files are outside the service tree → cwd = project root or a custom dir
 
-Store this as a per-task config: `TASK_WORKING_DIRS: dict[str, str]`.
-
-When a task's working directory is the service root, Aider receives file paths
-relative to that service root. The pipeline must **rebase** the task's absolute
-file paths (from `tasks.json`, which are relative to project root) to be
-relative to the task's working directory.
-
-Example: task file path `services/airflow-ingestion/plugins/client.py` with
-service root `services/airflow-ingestion/` → Aider receives `--file plugins/client.py`.
+Store overrides in `TASK_WORKING_DIRS: dict[str, str]`. Tasks not listed use
+the service root by default (scaffold tasks are handled automatically by the
+pipeline's `get_task_working_dir()` function).
 
 ### File Path Rebasing
 
-For each task:
-1. Get the task's working directory
-2. For each file in the task's `files` list, strip the working directory prefix
-   to get the path relative to the cwd
-3. Pass the rebased paths as `--file` arguments to Aider
+File paths from `tasks.json` are relative to the project root. For tasks
+running from the service root, these must be rebased:
 
 ```
 project root:    /Users/me/my-project/
@@ -142,89 +126,74 @@ rebased path:    plugins/client.py                         (for --file arg)
 aider cwd:       /Users/me/my-project/services/my-service/
 ```
 
-If a file path does NOT start with the working directory prefix, it can't be
-rebased — the file is outside the working directory. In that case, either use
-the project root as cwd for that task, or flag it as an error.
+Scaffold tasks run from the project root, so no rebasing is needed for them.
 
 ## Per-Task Test Command Derivation
 
-For each task in `tasks.json`, derive the test command:
+For each task, compose the test command using the detected runner pattern
+and the task's test file paths (rebased to the working directory):
 
 ### Test tasks (`task_type: "test"`)
 
-Test tasks write test files. Their verification is:
-1. The test file is syntactically valid (importable)
-2. The tests fail because implementation doesn't exist yet
+Test tasks write test files. Their verification is special:
+- The test file must be syntactically valid (importable)
+- The tests must FAIL (no implementation exists yet)
 
-Command: `<test-runner> <test_file_path> -x` (expect non-zero exit = correct)
+Command: `<runner> <framework> <rebased_test_file> -x`
 
-Test file paths in the `tests` field must also be rebased relative to the
-task's working directory.
+Example (uv + pytest): `uv run pytest tests/test_client.py -x`
 
-For test tasks, the pipeline needs inverted verification logic: the test command
-should *fail* (non-zero exit). If it passes, something is wrong — the tests
-should fail because there's no implementation yet.
-
-However, Aider's `--auto-test` expects the test to pass. So for test tasks,
-do NOT use `--auto-test` with Aider. Instead, use `--auto-lint` only. The
-pipeline's `verify_task` node handles the inverted check independently.
+For test tasks, do NOT use Aider's `--auto-test` — it expects tests to pass,
+which would cause an infinite fix loop. Use `--auto-lint` only. The pipeline's
+`verify_task` node handles the inverted check independently.
 
 ### Implementation tasks (`task_type: "implementation"`)
 
-Implementation tasks write production code. Their verification is:
-1. All previously-written tests pass
-2. Lint passes
+Implementation tasks write production code. Their verification:
+- All previously-written tests must PASS
+- Lint must pass
 
-Collect all unique `test_file` paths from the task's `tests` list. Rebase them
-relative to the working directory. Construct:
-`<test-runner> <rebased_test_file_1> <rebased_test_file_2> ... -x`
+Command: `<runner> <framework> <rebased_test_file_1> <rebased_test_file_2> -x`
 
-For implementation tasks, use both `--auto-lint` and `--auto-test` with Aider.
+For implementation tasks, use both Aider's `--auto-lint` and `--auto-test`.
 
 ### Tasks with no tests
 
-Scaffold tasks, config tasks, and infrastructure tasks may have empty `tests`
-lists. These get `--auto-lint` only, no test gate.
+Scaffold, config, and infrastructure tasks with empty `tests` lists get
+`--auto-lint` only. No test gate.
 
-## Deriving the Test Command Pattern
+## Bootstrap Detection
 
-Build the full command from detected framework + project structure:
+Look at the scaffold-phase tasks. If any task creates a project config file
+(`pyproject.toml`, `package.json`, `build.gradle`), the pipeline needs a
+bootstrap step after that task to initialize the tooling environment.
 
-| Framework | Base pattern | Example |
-|-----------|-------------|---------|
-| pytest | `pytest <files> -x` | `pytest tests/test_client.py -x` |
-| jest | `npx jest <files>` | `npx jest tests/client.test.ts` |
-| JUnit/Gradle | `./gradlew test --tests '<pattern>'` | `./gradlew test --tests 'ClientTest'` |
+Determine the bootstrap command from the ecosystem:
 
-Note: test file paths in the command are relative to the task's working
-directory (the same directory that Aider uses as cwd). This is why rebasing
-matters — everything is relative to the same root.
+| Config file created | Bootstrap command |
+|-------------------|------------------|
+| `pyproject.toml` + uv | `uv sync` |
+| `pyproject.toml` + pip | `pip install -e ".[dev]"` |
+| `package.json` + npm | `npm install` |
+| `package.json` + yarn | `yarn install` |
+| `build.gradle` | `./gradlew build` |
+| `Cargo.toml` | `cargo build` |
 
 ## Model Availability Check
-
-Check if LM Studio is reachable:
 
 ```bash
 curl -s http://localhost:1234/v1/models
 ```
 
-If reachable, parse the response to find available models. Note the model name
-for `config.py`. If not reachable, note it as a prerequisite — the pipeline
-will fail at runtime if LM Studio isn't running, which is expected.
-
-Also check what model the user has been using. The `run-tasks-template.sh` from
-agent-ready-plans uses `lm_studio/qwen/qwen3-coder-30b` as the default. Ask the
-user to confirm their model string if it can't be detected.
+If reachable, note the model name. If not, note as a prerequisite.
 
 ## Aider Availability Check
 
 ```bash
-which aider
-aider --version
+which aider && aider --version
 ```
 
-If not found, note the installation command: `pip install aider-chat` (or
-`uv tool install aider-chat`).
+If not found: `pip install aider-chat` or `uv tool install aider-chat`.
 
 ## Presentation
 
@@ -239,34 +208,29 @@ Present the analysis as a structured summary:
 - Dependency depth: D
 
 ### Working Directory
-- Service root: `services/my-service/` (detected from file path analysis)
-- Tasks using service root: 25/27
-- Tasks using project root: 2/27 (task-26: Dockerfile, task-27: integration)
+- Service root: `services/my-service/`
+- Scaffold tasks: run from project root
+- Other tasks: run from service root
 
-### Detected Tooling (from service root)
-- Language: Python
-- Lint command: `ruff check` (from service root)
-- Test runner: `pytest`
+### Detected Tooling
+- Ecosystem: Python + uv
+- Lint: `uv run ruff check`
+- Test: `uv run pytest`
+- Bootstrap: `uv sync` (after task-01)
 
 ### Per-Task Summary
 | Task ID | Type | Working Dir | Lint | Test Command | Verification |
 |---------|------|-------------|------|--------------|--------------|
-| task-01 | impl | service root | ruff check | (none) | lint only |
-| task-02 | test | service root | ruff check | `pytest tests/test_client.py -x` | expect failure |
-| task-03 | impl | service root | ruff check | `pytest tests/test_client.py -x` | expect pass |
-| task-26 | impl | project root | (none) | (none) | lint skip |
+| task-01 | impl | project root | (skip) | (none) | scaffold |
+| task-02 | impl | service root | uv run ruff check | (none) | lint only |
+| task-03 | test | service root | uv run ruff check | `uv run pytest tests/test_x.py -x` | expect failure |
+| task-04 | impl | service root | uv run ruff check | `uv run pytest tests/test_x.py -x` | expect pass |
 | ... | | | | | |
 
 ### Prerequisites
-- [✓/✗] Aider installed (version X.Y.Z)
-- [✓/✗] LM Studio reachable at localhost:1234
-  - Model: <detected or ask>
-- [✓/✗] Lint command works from service root
-- [✓/✗] Test runner works from service root
-
-### Questions
-1. <Any ambiguities to confirm>
+- [✓/✗] Aider installed
+- [✓/✗] LM Studio reachable
+- [✓/✗] Lint command verified against prototype
 ```
 
-Ask the user to confirm the detected working directories and commands before
-proceeding.
+Ask the user to confirm detected commands and ecosystem before proceeding.
