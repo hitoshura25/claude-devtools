@@ -2,29 +2,33 @@
 
 ## Graph Structure
 
-The pipeline is a task execution loop with verification, circuit breakers,
-and a tooling bootstrap step after scaffold tasks.
+The pipeline is a task execution loop with verification, auto-fix, circuit
+breakers, model escalation, and a tooling bootstrap step after scaffold tasks.
 
 ```
                           ┌──────────────────────────────────────────────────────┐
                           │                                                      │
 START ──→ load_tasks ──→ pick_next_task ──→ compose_prompt ──→ execute_task ──→ verify_task
                                ↑                                                     │
-                               │                          ┌──────────────────────────┤
-                               │                          │                          │
-                               │                     task passed              task failed
-                               │                          │                          │
-                               │                     needs bootstrap?     retries < max?
-                               │                      ┌───┴───┐           ┌────┴────┐
-                               │                    yes        no        yes         no
-                               │                     │         │          │          │
-                               │                  bootstrap    │     retry_task  mark_failed
-                               │                     │         │          │          │
-                               │                     ▼         ▼          │          │
-                               ├──────────────── (back to pick) ◄────────┘          │
-                               │                                                    │
-                               ├────────────────────────────────────────────────────┘
-                               │
+                               │                     ┌────────────────────────────────┤
+                               │                     │                                │
+                               │                task passed                    task failed
+                               │                     │                                │
+                               │               needs bootstrap?            retries < max?
+                               │                ┌────┴────┐                ┌─────┴─────┐
+                               │              yes         no             yes            no
+                               │               │          │               │             │
+                               │           bootstrap      │          retry_task    more tiers?
+                               │               │          │               │        ┌───┴───┐
+                               │               ▼          ▼               │      yes       no
+                               │          (back to pick)◄─┘               │       │        │
+                               │               ▲                          │   escalate  mark_failed
+                               │               │                          │       │        │
+                               ├───────────────┼──────────────────────────┘       │        │
+                               │               │                                  │        │
+                               │               └──────────────────────────────────┘        │
+                               │                                                           │
+                               └───────────────────────────────────────────────────────────┘
                           (no more tasks)
                                │
                                ▼
@@ -58,12 +62,9 @@ After the scaffold task that creates the project config file (e.g.,
 to initialize the tooling environment. This is configured in `config.py`:
 
 ```python
-# Bootstrap: run after the scaffold task that creates the project config.
-# This initializes the service's tooling environment so lint/test commands
-# work for all subsequent tasks.
-BOOTSTRAP_AFTER_TASK = "task-01"  # The scaffold task ID
-BOOTSTRAP_COMMAND = "uv sync"     # or "npm install", "./gradlew build", etc.
-BOOTSTRAP_WORKING_DIR = str(SERVICE_ROOT)  # Run from the newly-created service dir
+BOOTSTRAP_AFTER_TASK = "task-01"
+BOOTSTRAP_COMMAND = "uv sync"
+BOOTSTRAP_WORKING_DIR = str(SERVICE_ROOT)
 ```
 
 The bootstrap is a node in the graph that runs between `verify_task` (for
@@ -90,6 +91,7 @@ def build_graph() -> StateGraph:
     graph.add_node("verify_task", verify_task_node)
     graph.add_node("bootstrap", bootstrap_node)
     graph.add_node("retry_task", retry_task_node)
+    graph.add_node("escalate_model", escalate_model_node)
     graph.add_node("mark_failed", mark_failed_node)
     graph.add_node("report", report_node)
 
@@ -108,7 +110,7 @@ def build_graph() -> StateGraph:
     graph.add_edge("compose_prompt", "execute_task")
     graph.add_edge("execute_task", "verify_task")
 
-    # Verify → pass (maybe bootstrap, then pick next) or fail (retry/mark)
+    # Verify → pass / bootstrap / retry / escalate / fail
     graph.add_conditional_edges(
         "verify_task",
         route_after_verify,
@@ -116,6 +118,7 @@ def build_graph() -> StateGraph:
             "passed": "pick_next_task",
             "passed_needs_bootstrap": "bootstrap",
             "retry": "retry_task",
+            "escalate": "escalate_model",
             "exhausted": "mark_failed",
         },
     )
@@ -125,6 +128,9 @@ def build_graph() -> StateGraph:
 
     # Retry loops back to compose (rebuild prompt with error context)
     graph.add_edge("retry_task", "compose_prompt")
+
+    # Escalate bumps tier, resets retries, re-enters compose
+    graph.add_edge("escalate_model", "compose_prompt")
 
     # Mark failed → pick next (continue with remaining tasks)
     graph.add_edge("mark_failed", "pick_next_task")
@@ -151,22 +157,39 @@ def route_after_pick(state: PipelineState) -> str:
 ### `route_after_verify`
 
 Decides what to do after verification: advance (with optional bootstrap),
-retry, or give up.
+retry at the same tier, escalate to a stronger model, or give up.
 
 ```python
 def route_after_verify(state: PipelineState) -> str:
     task_id = state["current_task_id"]
     result = state["task_results"][task_id]
 
-    if result["status"] == "passed":
+    if result["status"] in ("passed", "degraded"):
         # Check if this task triggers a bootstrap
-        if task_id == config.BOOTSTRAP_AFTER_TASK and not state.get("bootstrap_done"):
+        if (
+            task_id == config.BOOTSTRAP_AFTER_TASK
+            and not state.get("bootstrap_done")
+        ):
             return "passed_needs_bootstrap"
         return "passed"
 
+    # Task failed — determine next action
+
+    # Can we retry at the current tier?
     if state["current_retry"] < config.MAX_RETRIES_PER_TASK:
         return "retry"
 
+    # Retries exhausted at current tier — can we escalate?
+    task = _find_task(task_id, state["all_tasks"])
+    task_type = task.get("task_type", "implementation")
+    role = "scaffold" if task.get("phase") == "scaffold" else task_type
+    models_for_role = config.MODEL_ROLES.get(role, config.MODEL_ROLES["implementation"])
+    current_tier = state.get("current_model_tier", 0)
+
+    if current_tier + 1 < len(models_for_role):
+        return "escalate"
+
+    # No more tiers — mark as failed
     return "exhausted"
 ```
 
@@ -178,22 +201,15 @@ Runs the tooling environment initialization command after the scaffold task.
 
 ```python
 def bootstrap_node(state: PipelineState) -> dict:
-    """Initialize the service's tooling environment.
-
-    Runs after the scaffold task creates the project config file.
-    This makes lint/test tools available for all subsequent tasks.
-    """
     cmd = config.BOOTSTRAP_COMMAND
     working_dir = config.BOOTSTRAP_WORKING_DIR
     print(f"[bootstrap] Running: {cmd} (in {working_dir})")
 
-    rc, stdout, stderr = run_command(cmd, working_dir)
+    rc, stdout, stderr = aider_bridge.run_verification(cmd, working_dir)
     if rc != 0:
         print(f"[bootstrap] WARNING: bootstrap failed (exit {rc})")
         print(f"  stdout: {stdout[:500]}")
         print(f"  stderr: {stderr[:500]}")
-        # Don't crash the pipeline — lint/test failures downstream
-        # will surface the problem clearly
     else:
         print("[bootstrap] Tooling environment initialized successfully")
 
@@ -204,36 +220,39 @@ def bootstrap_node(state: PipelineState) -> dict:
 
 Finds the next unprocessed task in topological order. A task is eligible if:
 1. It hasn't been processed yet (not in `task_results`)
-2. All its dependencies have passed or been skipped
+2. All its dependencies have passed or been degraded
 
-If a task's dependency failed, skip that task too (can't build on a failed
-foundation). Mark it as "skipped" in results.
+If a task's dependency failed, skip that task too. Mark it as "skipped".
 
 ```python
 def pick_next_task_node(state: PipelineState) -> dict:
+    results = state["task_results"]
+    task_map = {t["id"]: t for t in state["all_tasks"]}
+
     for task_id in state["task_order"]:
-        if task_id in state["task_results"]:
-            continue  # Already processed
+        if task_id in results:
+            continue
 
-        # Check dependencies
-        task = next(t for t in state["all_tasks"] if t["id"] == task_id)
-        deps_ok = all(
-            state["task_results"].get(dep, {}).get("status") in ("passed", "degraded")
-            for dep in task.get("depends_on", [])
-        )
+        task = task_map[task_id]
+        deps = task.get("depends_on", [])
 
-        if not deps_ok:
-            # Skip — dependency failed
+        blocked_by = []
+        for dep in deps:
+            dep_status = results.get(dep, {}).get("status")
+            if dep_status not in ("passed", "degraded"):
+                blocked_by.append(dep)
+
+        if blocked_by:
             return {
                 "task_results": {
-                    **state["task_results"],
+                    **results,
                     task_id: {
                         "task_id": task_id,
                         "status": "skipped",
                         "retries": 0,
                         "lint_passed": False,
                         "test_passed": None,
-                        "error_summary": "Skipped — dependency failed",
+                        "error_summary": f"Skipped — dependency failed: {blocked_by}",
                     },
                 },
             }
@@ -241,90 +260,87 @@ def pick_next_task_node(state: PipelineState) -> dict:
         return {
             "current_task_id": task_id,
             "current_retry": 0,
+            "current_model_tier": 0,
+            "current_lint_errors": "",
+            "current_test_errors": "",
         }
 
-    # No more tasks
     return {"current_task_id": None, "is_complete": True}
 ```
 
-Note: The skip logic above is simplified. In practice, `pick_next_task` should
-loop past skipped tasks until it finds an eligible one or runs out. Handle
-this by having the routing function check `is_complete` separately from
-`current_task_id`.
-
-### Working directory per task
-
-The `execute_task` and `verify_task` nodes use `aider_bridge.get_task_working_dir()`
-to determine the correct cwd for each task. The logic:
-
-```python
-def get_task_working_dir(task_id: str) -> str:
-    """Determine the working directory for a task.
-
-    Scaffold tasks run from the project root (the service dir may not exist yet).
-    All other tasks run from the service root (where lint/test tools are installed).
-    Per-task overrides in config take priority.
-    """
-    # Explicit override
-    if task_id in config.TASK_WORKING_DIRS:
-        return config.TASK_WORKING_DIRS[task_id]
-
-    # Scaffold tasks: service dir may not exist yet, use project root
-    task = _find_task_by_id(task_id)
-    if task and task.get("phase") == "scaffold":
-        return str(config.PROJECT_ROOT)
-
-    # All other tasks: use service root
-    return str(config.SERVICE_ROOT)
-```
-
-Scaffold tasks don't need path rebasing (their file paths are project-root-
-relative, and Aider's cwd is the project root). All other tasks get their
-paths rebased to be relative to the service root.
+Note: `current_model_tier` is reset to 0 when picking a new task. Each task
+starts with the default model for its role.
 
 ### retry_task
 
-Increments the retry counter. The prompt composer can use the retry count to
-include error context from the previous attempt.
+Increments the retry counter. The prompt composer includes error context from
+the previous attempt on retry.
 
 ```python
 def retry_task_node(state: PipelineState) -> dict:
-    return {"current_retry": state["current_retry"] + 1}
+    new_retry = state["current_retry"] + 1
+    print(
+        f"[retry_task] Retrying {state['current_task_id']} "
+        f"(attempt {new_retry + 1}/{config.MAX_RETRIES_PER_TASK + 1})"
+    )
+    return {"current_retry": new_retry}
+```
+
+### escalate_model
+
+Bumps the model tier and resets retries. The task re-enters the
+compose→execute→verify loop with a stronger model.
+
+```python
+def escalate_model_node(state: PipelineState) -> dict:
+    """Escalate to the next model tier and reset retries.
+
+    Called when the current model has exhausted its retry budget.
+    The stronger model gets a fresh set of retries. The prompt composer
+    will include error context from the previous tier's attempts.
+    """
+    task_id = state["current_task_id"]
+    new_tier = state.get("current_model_tier", 0) + 1
+
+    # Resolve the new model name for logging
+    task = _find_task(task_id, state["all_tasks"])
+    task_type = task.get("task_type", "implementation")
+    role = "scaffold" if task.get("phase") == "scaffold" else task_type
+    models_for_role = config.MODEL_ROLES.get(role, config.MODEL_ROLES["implementation"])
+    new_model_name = models_for_role[new_tier]
+
+    print(
+        f"[escalate] {task_id}: tier {new_tier} → "
+        f"model '{new_model_name}' (retries reset to 0)"
+    )
+
+    return {
+        "current_model_tier": new_tier,
+        "current_retry": 0,
+    }
 ```
 
 ### mark_failed
 
-Records the task as failed and allows the pipeline to continue with remaining
-tasks.
+Records the task as permanently failed and allows the pipeline to continue.
 
 ```python
 def mark_failed_node(state: PipelineState) -> dict:
     task_id = state["current_task_id"]
-    result = state["task_results"].get(task_id, {})
+    existing = state["task_results"].get(task_id, {})
+    tier = state.get("current_model_tier", 0)
+    print(
+        f"[mark_failed] {task_id} exhausted all retries at tier {tier} "
+        f"— marking failed"
+    )
     return {
         "task_results": {
             **state["task_results"],
-            task_id: {**result, "status": "failed"},
+            task_id: {**existing, "status": "failed"},
         },
+        "current_task_id": None,
     }
 ```
-
-## v2 Extension Point: Escalation
-
-When adding multi-model escalation in v2, the change is:
-
-1. Add a `current_tier` field to `PipelineState`
-2. Change `route_after_verify` to check `current_tier` before deciding "retry"
-   vs "exhausted":
-   - If retries exhausted AND more tiers available → "escalate"
-   - If retries exhausted AND no more tiers → "exhausted"
-3. Add an `"escalate"` node that bumps `current_tier` and resets `current_retry`
-4. Add the conditional edge from `verify_task` to `escalate`
-5. `escalate` edges back to `compose_prompt` (which adjusts the prompt for
-   the new model tier)
-
-The graph structure is designed to make this a localized change — no existing
-nodes need to be modified, just the routing function and one new node.
 
 ## State Update Pattern
 

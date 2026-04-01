@@ -87,7 +87,8 @@ containerization sections in proven reality rather than speculative recommendati
 ### Lint Setup
 
 Set up linting for the prototype code. The goal is to prove that the lint toolchain
-works for this technology and discover any configuration quirks.
+works for this technology and discover any configuration quirks — including whether
+the linter supports automatic fixing of common errors.
 
 **How to approach it:**
 
@@ -98,9 +99,28 @@ works for this technology and discover any configuration quirks.
 3. Configure it in the prototype directory.
 4. Run it against the prototype code.
 5. Fix all issues until the linter passes clean.
+6. **Discover auto-fix capability.** Check whether the linter supports an auto-fix
+   mode that can resolve common errors without model intervention. Most modern
+   linters do:
 
-**What to capture for the design doc:**
+   | Ecosystem | Linter | Auto-fix command | Typical fixable rules |
+   |-----------|--------|------------------|-----------------------|
+   | Python | ruff | `ruff check --fix` | Import sorting, unused imports, annotation upgrades |
+   | TypeScript/JS | eslint | `eslint --fix` | Formatting, import ordering, simple style rules |
+   | Rust | clippy | `cargo clippy --fix` | Idiomatic patterns, unnecessary code |
+   | Go | gofmt/goimports | `gofmt -w` / `goimports -w` | Formatting, import grouping |
+   | Kotlin | ktlint | `ktlint -F` | Formatting, import ordering |
+
+7. **Verify auto-fix works.** Intentionally introduce a fixable error (e.g., unsort
+   an import block), run the auto-fix command, and confirm it resolves cleanly.
+   Record the exact command that worked. If auto-fix is not available or not
+   reliable, record "Not available" — downstream skills need to know this.
+
+**What to capture for the design doc's Tooling section:**
 - Which linter and version
+- The exact lint check command (runnable from the service root)
+- The exact auto-fix command (or "Not available")
+- What categories of errors the auto-fix covers
 - Any configuration tweaks needed for this technology (e.g., specific rules to
   disable, import ordering settings)
 - Any surprising lint issues that required code changes

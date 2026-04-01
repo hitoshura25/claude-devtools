@@ -67,6 +67,35 @@ List new dependencies this feature introduces. For each:
 - **Why needed**: What it provides
 - **Alternatives considered**: If relevant
 
+## Tooling
+
+Validated during prototype build. These exact commands are consumed by downstream
+skills — do not change the field names.
+
+### Language & Ecosystem
+- **Language**: <e.g., Python 3.11>
+- **Package manager**: <e.g., uv, npm, cargo>
+- **Service root**: <relative path from project root, e.g., `services/airflow-ingestion/`>
+
+### Lint
+- **Tool**: <e.g., ruff 0.4.x>
+- **Lint command**: <e.g., `uv run ruff check`>
+- **Auto-fix command**: <e.g., `uv run ruff check --fix`> or "Not available"
+- **Auto-fix scope**: <e.g., "Import sorting (I), unused imports (F401), upgrade annotations (UP)"> or "N/A"
+- **Configuration**: <where config lives, e.g., `pyproject.toml [tool.ruff]`>
+
+### Test
+- **Framework**: <e.g., pytest 8.x>
+- **Test command**: <e.g., `uv run pytest tests/ -x`>
+- **Configuration**: <where config lives, e.g., `pyproject.toml [tool.pytest.ini_options]`>
+
+### Bootstrap
+- **Command**: <e.g., `uv sync`> — run from service root after scaffold creates config
+- **Trigger**: <what file creation triggers bootstrap, e.g., `pyproject.toml`>
+
+### Notes
+- <Any toolchain surprises discovered during prototype validation>
+
 ## Testing Strategy
 
 Based on cross-cutting research from Phase 2.

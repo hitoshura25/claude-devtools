@@ -99,6 +99,37 @@ cd prototypes/<feature>/
 uv run ruff check --version  # Should print ruff version, not "not found"
 ```
 
+### Auto-Fix Detection
+
+Check whether the detected linter supports an auto-fix mode. The design doc's
+Tooling section (produced by the planning skill) records this, but verify it
+independently in case the design doc was written before auto-fix discovery was
+added.
+
+**Check the design doc first.** Read the `## Tooling` section of the design
+doc at `docs/design/<feature>.md`. If it contains an `Auto-fix command` field,
+use that value. If the Tooling section is missing or doesn't mention auto-fix,
+detect it manually.
+
+**Manual detection by ecosystem:**
+
+| Ecosystem | Linter | Auto-fix command | Verify with |
+|-----------|--------|------------------|-------------|
+| Python | ruff | `uv run ruff check --fix` | Unsort an import, run fix, check it resolves |
+| TypeScript/JS | eslint | `npx eslint --fix` | Add trailing comma style error, run fix |
+| Rust | clippy | `cargo clippy --fix` | Introduce a clippy-fixable pattern |
+| Go | goimports | `goimports -w` | Unsort imports, run, verify |
+| Kotlin | ktlint | `ktlint -F` | Introduce import ordering error |
+
+**Verification:** If possible, run the auto-fix command against a prototype
+file to confirm it works. If the prototype directory doesn't have a fixable
+error, intentionally introduce one (e.g., unsort an import block), run auto-fix,
+and confirm it resolves cleanly.
+
+Record the result:
+- If auto-fix works: `DEFAULT_LINT_FIX_CMD = "<detected command>"`
+- If auto-fix is not available or unreliable: `DEFAULT_LINT_FIX_CMD = None`
+
 ### Per-Task Working Directory
 
 Most tasks share the service root as their working directory. But some tasks
@@ -179,13 +210,82 @@ Determine the bootstrap command from the ecosystem:
 | `build.gradle` | `./gradlew build` |
 | `Cargo.toml` | `cargo build` |
 
-## Model Availability Check
+## Model Detection and Role Assignment
+
+### Detect Available Models
+
+Check LM Studio for locally available models:
 
 ```bash
 curl -s http://localhost:1234/v1/models
 ```
 
-If reachable, note the model name. If not, note as a prerequisite.
+If reachable, extract the loaded model name(s). If not reachable, note as a
+prerequisite.
+
+### Check for Cloud Model API Keys
+
+For each cloud model the user might want to use, check whether the required
+environment variable is set:
+
+```bash
+# Anthropic (Claude)
+[ -n "$ANTHROPIC_API_KEY" ] && echo "Anthropic API key: set" || echo "Anthropic API key: NOT SET"
+
+# OpenAI
+[ -n "$OPENAI_API_KEY" ] && echo "OpenAI API key: set" || echo "OpenAI API key: NOT SET"
+```
+
+Do not display the key values — only whether they are set.
+
+### Propose Model Configuration
+
+Present the detected models and ask the user to confirm role assignments. The
+pipeline uses three roles:
+
+- **test** — writes test files. Benefits from a strong model that produces
+  real assertions and proper mock setups rather than `NotImplementedError`
+  stubs. Test quality directly determines whether implementation tasks have
+  meaningful guardrails.
+- **implementation** — writes production code constrained by pre-written tests.
+  Local models work well here because the tests provide tight feedback.
+- **scaffold** — creates project structure, config files, boilerplate. Low
+  complexity, local models are sufficient.
+
+Each role maps to an ordered list of model names. The first model in the list
+is the default; subsequent entries are escalation tiers tried when the default
+exhausts its retries.
+
+Present the proposal like this:
+
+```
+### Model Configuration
+
+Detected models:
+  local-qwen:  lm_studio/qwen/qwen3-coder-30b (LM Studio, localhost:1234)
+  sonnet:      anthropic/claude-sonnet-4 (ANTHROPIC_API_KEY is set)
+
+Proposed role assignments:
+  test:           sonnet                    (strong model for quality tests)
+  implementation: local-qwen → sonnet       (local first, escalate if stuck)
+  scaffold:       local-qwen                (boilerplate, no escalation needed)
+
+Confirm these assignments, or adjust?
+```
+
+If only a local model is available (no cloud API keys set), assign it to all
+roles. Note in the output that model escalation won't be available:
+
+```
+Proposed role assignments:
+  test:           local-qwen                (no cloud model available)
+  implementation: local-qwen                (no escalation — single tier)
+  scaffold:       local-qwen
+
+Note: No cloud API keys detected. All roles use the local model.
+Model escalation (retrying with a stronger model) is disabled.
+Set ANTHROPIC_API_KEY to enable escalation.
+```
 
 ## Aider Availability Check
 
@@ -215,22 +315,29 @@ Present the analysis as a structured summary:
 ### Detected Tooling
 - Ecosystem: Python + uv
 - Lint: `uv run ruff check`
+- Lint auto-fix: `uv run ruff check --fix`
 - Test: `uv run pytest`
 - Bootstrap: `uv sync` (after task-01)
 
+### Model Configuration
+<proposed model and role assignment — see above>
+
 ### Per-Task Summary
-| Task ID | Type | Working Dir | Lint | Test Command | Verification |
-|---------|------|-------------|------|--------------|--------------|
-| task-01 | impl | project root | (skip) | (none) | scaffold |
-| task-02 | impl | service root | uv run ruff check | (none) | lint only |
-| task-03 | test | service root | uv run ruff check | `uv run pytest tests/test_x.py -x` | expect failure |
-| task-04 | impl | service root | uv run ruff check | `uv run pytest tests/test_x.py -x` | expect pass |
+| Task ID | Type | Role | Lint | Test Command | Verification |
+|---------|------|------|------|--------------|--------------|
+| task-01 | impl | scaffold | (skip) | (none) | scaffold |
+| task-02 | impl | implementation | uv run ruff check | (none) | lint only |
+| task-03 | test | test | uv run ruff check | `uv run pytest tests/test_x.py -x` | expect failure |
+| task-04 | impl | implementation | uv run ruff check | `uv run pytest tests/test_x.py -x` | expect pass |
 | ... | | | | | |
 
 ### Prerequisites
 - [✓/✗] Aider installed
 - [✓/✗] LM Studio reachable
+- [✓/✗] Cloud API keys (if using cloud models)
 - [✓/✗] Lint command verified against prototype
+- [✓/✗] Lint auto-fix verified
 ```
 
-Ask the user to confirm detected commands and ecosystem before proceeding.
+Ask the user to confirm detected commands, model assignments, and ecosystem
+before proceeding.
