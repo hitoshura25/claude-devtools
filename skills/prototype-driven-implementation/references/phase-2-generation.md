@@ -13,12 +13,12 @@ pipelines/<feature-name>/
 ├── nodes/
 │   ├── __init__.py
 │   ├── load_tasks.py          # Read + validate tasks.json
-│   ├── compose_prompt.py      # Build message file for Aider
-│   ├── execute_task.py        # Invoke Aider subprocess
-│   ├── verify_task.py         # Independent lint/test verification
+│   ├── compose_prompt.py      # Build prompt content for executors
+│   ├── execute_task.py        # Dispatch to the appropriate executor
+│   ├── verify_task.py         # Auto-fix + independent lint/test verification
 │   ├── bootstrap.py           # Tooling environment initialization
 │   └── report.py              # Final summary
-├── aider_bridge.py            # Aider subprocess wrapper
+├── agent_bridge.py            # Executor dispatch and subprocess wrappers
 ├── requirements.txt           # langgraph, pydantic
 └── README.md                  # Usage instructions
 ```
@@ -32,10 +32,11 @@ Single place for all configurable values. Generated from Phase 1 detection.
 ```python
 """Pipeline configuration — all settings in one place.
 
-Edit this file to change model endpoints, retry limits, or tooling commands.
+Edit this file to change executors, retry limits, or tooling commands.
 These values were detected from the project during pipeline generation.
 """
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -57,27 +58,31 @@ BOOTSTRAP_AFTER_TASK = "<scaffold-task-id>"
 BOOTSTRAP_COMMAND = "<detected-bootstrap>"
 BOOTSTRAP_WORKING_DIR = str(SERVICE_ROOT)
 
-# ── Models ─────────────────────────────────────────────────────
-# Define each model once. The name is the key used in MODEL_ROLES.
-MODELS = {
-    "local-qwen": {
+# ── Executors ──────────────────────────────────────────────────
+# Each named executor is a coding agent CLI with type-specific config.
+# Aider executors are named after their model (aider-local-qwen, etc.).
+# Claude and Gemini executors can have variants for different model tiers.
+EXECUTORS: dict[str, dict] = {
+    "aider-local-qwen": {
+        "type": "aider",
         "model": "<detected-model-string>",
         "api_base": "http://localhost:1234/v1",
         "api_key": "lm-studio",
     },
-    # Cloud models use api_key_env to resolve from environment at startup.
-    # "sonnet": {
-    #     "model": "anthropic/claude-sonnet-4",
-    #     "api_base": "https://api.anthropic.com/v1",
-    #     "api_key_env": "ANTHROPIC_API_KEY",
+    # "claude": {
+    #     "type": "claude",
+    #     # Uses Pro plan auth — no API key needed
+    # },
+    # "gemini-flash": {
+    #     "type": "gemini",
+    #     "model": "gemini-2.5-flash",
     # },
 }
 
-# ── Model Roles ────────────────────────────────────────────────
-# Maps task role → ordered list of model names to try.
+# ── Executor Roles ─────────────────────────────────────────────
+# Maps task role → ordered escalation chain of executor names.
 # Position 0 is the default; subsequent entries are escalation tiers.
-# A model can appear in multiple roles without duplicating its config.
-MODEL_ROLES = {
+EXECUTOR_ROLES: dict[str, list[str]] = {
     "test":           ["<user-confirmed>"],
     "implementation": ["<user-confirmed>"],
     "scaffold":       ["<user-confirmed>"],
@@ -88,14 +93,14 @@ MAX_RETRIES_PER_TASK = 3
 
 # ── Tooling ────────────────────────────────────────────────────
 DEFAULT_LINT_CMD = "<detected-lint-command>"
-DEFAULT_LINT_FIX_CMD = "<detected-lint-fix-command>"  # None if linter has no auto-fix
+DEFAULT_LINT_FIX_CMD = "<detected-lint-fix-command>"  # None if no auto-fix
 TEST_RUNNER = "<detected-test-runner>"
 GLOBAL_TEST_CMD = "<detected-global-test-command>"
 
 TASK_TEST_COMMANDS: dict[str, str | None] = {}
 TASK_LINT_OVERRIDES: dict[str, str | None] = {}
 
-# ── Aider ──────────────────────────────────────────────────────
+# ── Aider-Specific ─────────────────────────────────────────────
 AIDER_EXTRA_ARGS = [
     "--no-show-model-warnings",
     "--no-check-update",
@@ -105,122 +110,56 @@ AIDER_EXTRA_ARGS = [
 
 
 # ── Startup Validation ────────────────────────────────────────
-def _resolve_api_keys():
-    """Resolve api_key_env references to actual values at import time.
+def _validate_executors() -> None:
+    """Validate all active executors at import time.
 
-    Fails fast with a clear error if a required environment variable
-    is not set, rather than waiting until the first task that needs
-    that model.
+    Checks CLI availability and auth for every executor that appears
+    in any EXECUTOR_ROLES chain. Fails fast with a clear error rather
+    than waiting until a task needs that executor.
     """
-    for name, cfg in MODELS.items():
-        if "api_key_env" in cfg:
+    # Collect all executor names actually used in roles
+    active_executors = set()
+    for role, names in EXECUTOR_ROLES.items():
+        active_executors.update(names)
+
+    for name in active_executors:
+        if name not in EXECUTORS:
+            print(
+                f"[config] ERROR: Executor '{name}' referenced in "
+                f"EXECUTOR_ROLES but not defined in EXECUTORS.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        cfg = EXECUTORS[name]
+        executor_type = cfg.get("type")
+
+        # Check CLI is on PATH
+        cli_name = executor_type  # "aider", "claude", or "gemini"
+        if not shutil.which(cli_name):
+            print(
+                f"[config] ERROR: Executor '{name}' requires '{cli_name}' "
+                f"CLI but it is not on PATH.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # For aider executors with api_key_env, resolve the key
+        if executor_type == "aider" and "api_key_env" in cfg:
             env_var = cfg["api_key_env"]
             value = os.environ.get(env_var)
             if not value:
-                # Check if this model is actually used in any role
-                used_in_roles = [
-                    role for role, models in MODEL_ROLES.items()
-                    if name in models
-                ]
-                if used_in_roles:
-                    print(
-                        f"[config] ERROR: Model '{name}' requires "
-                        f"environment variable {env_var} but it is not set.\n"
-                        f"  This model is used in roles: {used_in_roles}\n"
-                        f"  Set it with: export {env_var}=<your-key>",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-            else:
-                cfg["api_key"] = value
+                print(
+                    f"[config] ERROR: Executor '{name}' requires "
+                    f"environment variable {env_var} but it is not set.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            cfg["api_key"] = value
 
-_resolve_api_keys()
+
+_validate_executors()
 ```
-
-Fill in all placeholder values from Phase 1. Use absolute paths for
-`PROJECT_ROOT` and `SERVICE_ROOT`. The `MODELS` and `MODEL_ROLES` sections
-are populated from the user's confirmed role assignments in Phase 1.
-
-### Model Resolution at Runtime
-
-The `execute_task` node resolves which model to use based on task type and
-the current escalation tier:
-
-```python
-def resolve_model(task: dict, current_tier: int) -> tuple[dict, str]:
-    """Return (model_config, role) for the given task and tier.
-
-    Determines the role from the task's type and phase, then looks up
-    the model at the current tier position in that role's escalation
-    chain.
-    """
-    task_type = task.get("task_type", "implementation")
-    if task.get("phase") == "scaffold":
-        role = "scaffold"
-    else:
-        role = task_type  # "test" or "implementation"
-
-    models_for_role = config.MODEL_ROLES.get(role, config.MODEL_ROLES["implementation"])
-    tier_idx = min(current_tier, len(models_for_role) - 1)
-    model_name = models_for_role[tier_idx]
-    model_config = config.MODELS[model_name]
-
-    return model_config, role
-```
-
-### Scaffold Tasks and Working Directory
-
-Scaffold tasks create the service directory itself — they can't run from a
-directory that doesn't exist yet. The `aider_bridge.get_task_working_dir()`
-function handles this automatically:
-
-```python
-def get_task_working_dir(task_id: str) -> str:
-    if task_id in config.TASK_WORKING_DIRS:
-        return config.TASK_WORKING_DIRS[task_id]
-
-    task = _find_task_by_id(task_id)
-    if task and task.get("phase") == "scaffold":
-        return str(config.PROJECT_ROOT)
-
-    return str(config.SERVICE_ROOT)
-```
-
-For scaffold tasks running from the project root:
-- File paths are NOT rebased (they're already project-root-relative)
-- Lint is typically skipped (tools aren't installed yet)
-- No test gate
-
-After the scaffold task passes, the `bootstrap` node runs the environment
-initialization command, making tools available for all subsequent tasks.
-
-### Path Rebasing
-
-For non-scaffold tasks, file paths from tasks.json (project-root-relative)
-must be rebased to be relative to the service root:
-
-```
-SERVICE_ROOT = PROJECT_ROOT / "services/airflow-ingestion"
-task file:    "services/airflow-ingestion/plugins/client.py"  (tasks.json)
-rebased:      "plugins/client.py"                              (for --file)
-aider cwd:    /abs/path/services/airflow-ingestion/
-```
-
-The `verify_task` node uses the same working directory for lint/test commands.
-
-### Environment Isolation
-
-Strip the pipeline's own venv from subprocess environments:
-
-```python
-env = os.environ.copy()
-for var in ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT"):
-    env.pop(var, None)
-```
-
-This prevents the pipeline's langgraph/pydantic venv from shadowing the
-service's tooling. Applies to any language ecosystem that uses environment
-variables for tool resolution.
 
 ### `pipeline_state.py`
 
@@ -245,7 +184,7 @@ class PipelineState(TypedDict):
     # Execution loop
     current_task_id: str | None
     current_retry: int
-    current_model_tier: int  # index into MODEL_ROLES[role] for current task
+    current_executor_tier: int  # index into EXECUTOR_ROLES[role]
     task_results: dict[str, TaskResult]
 
     # Prompt management
@@ -263,142 +202,77 @@ class PipelineState(TypedDict):
     summary: str
 ```
 
-### `verify_task.py` — Auto-Fix Before Lint Check
+### `nodes/load_tasks.py` — Critical: Enum Serialization
 
-The `verify_task` node runs independently after Aider exits. It now includes
-an auto-fix step before the lint check to resolve trivially fixable errors
-(import sorting, unused imports, etc.) that small models consistently fail to
-fix during Aider's reflection loop.
+When loading tasks from the Pydantic schema, use `mode="json"` in `model_dump()`
+to serialize enum fields as their string values. Without this, `task_type` becomes
+a `TaskType` enum object instead of the string `"test"` or `"implementation"`,
+which causes `EXECUTOR_ROLES` lookups to fail silently (the key `"test"` doesn't
+match the enum `TaskType.TEST`).
 
 ```python
-def verify_task_node(state: PipelineState) -> dict:
-    task_id = state["current_task_id"]
-    task = _find_task(task_id, state["all_tasks"])
-    working_dir = aider_bridge.get_task_working_dir(task_id, state["all_tasks"])
-    task_type = task.get("task_type", "implementation")
-
-    # ── Auto-fix (before lint check) ──────────────────────────
-    # Run the linter's auto-fix on edited files to resolve trivially
-    # fixable errors. This prevents models from wasting reflection
-    # cycles on import sorting (I001), unused imports (F401), etc.
-    if config.DEFAULT_LINT_FIX_CMD:
-        is_scaffold = task.get("phase") == "scaffold"
-        py_files = _get_python_files(task, is_scaffold, working_dir)
-        if py_files:
-            files_arg = " ".join(py_files)
-            fix_cmd = f"{config.DEFAULT_LINT_FIX_CMD} {files_arg}"
-            aider_bridge.run_verification(fix_cmd, working_dir)
-            # Auto-fix is best-effort — ignore the return code.
-            # The lint check below will catch anything unfixable.
-
-    # ── Lint check ────────────────────────────────────────────
-    # (existing lint check logic, unchanged)
+def load_tasks_node(state: PipelineState) -> dict:
     ...
-
-    # ── Test check ────────────────────────────────────────────
-    # (existing test check logic, unchanged)
+    ordered = decomposition.tasks_in_order()
+    # CRITICAL: mode="json" ensures enums serialize as strings, not enum objects.
+    # Without this, task_type becomes TaskType.TEST instead of "test",
+    # which breaks EXECUTOR_ROLES lookups.
+    all_tasks = [t.model_dump(mode="json") for t in ordered]
     ...
 ```
 
-The auto-fix step:
-- Runs before the lint check, not after
-- Is best-effort — if auto-fix fails or partially fixes, the lint check
-  catches the remainder
-- Only runs on Python files (or equivalent for the language) from the
-  current task's file list
-- Does not run for scaffold tasks where lint is skipped
+### `nodes/verify_task.py` — Auto-Fix Before Lint Check
 
-### `graph.py`
+```python
+def verify_task_node(state: PipelineState) -> dict:
+    ...
+    # ── Auto-fix (before lint check) ──────────────────────────
+    if not skip_lint and not is_scaffold and config.DEFAULT_LINT_FIX_CMD:
+        py_files = _get_py_files(task, working_dir)
+        if py_files:
+            fix_cmd = f"{config.DEFAULT_LINT_FIX_CMD} {' '.join(py_files)}"
+            agent_bridge.run_verification(fix_cmd, working_dir)
+            # Best-effort — lint check below catches the remainder
 
-See `references/langgraph-patterns.md` for the full graph structure including
-the bootstrap node and model escalation.
-
-### `nodes/load_tasks.py`
-
-Reads `tasks.json`, validates against the schema, produces topological order.
-Import the schema from `tasks/<feature>/task_schema.py` by adding the tasks
-directory to `sys.path`. Use the schema's `tasks_in_order()` method.
-
-### `nodes/compose_prompt.py`
-
-Transforms task JSON into a self-contained markdown message file for Aider.
-See `references/aider-integration.md` § "Prompt Template" for the format.
-
-For scaffold tasks (cwd = project root), use the original project-root-relative
-file paths. For all other tasks (cwd = service root), use rebased paths.
+    # ── Lint check ────────────────────────────────────────────
+    ...
+```
 
 ### `nodes/execute_task.py`
 
-Invokes Aider via `aider_bridge`. Resolves the model from the task's role and
-the current escalation tier. Does NOT verify — that's `verify_task`.
+Resolves the executor from the task's role and current tier, then dispatches:
 
 ```python
 def execute_task_node(state: PipelineState) -> dict:
     task_id = state["current_task_id"]
     task = _find_task(task_id, state["all_tasks"])
+    tier = state.get("current_executor_tier", 0)
 
-    # Resolve model from role + escalation tier
-    model_config, role = resolve_model(task, state.get("current_model_tier", 0))
+    executor_config, role = agent_bridge.resolve_executor(task, tier)
 
     print(
-        f"[execute_task] {task_id} (retry={state['current_retry']}) "
-        f"model={model_config['model']} role={role}"
+        f"[execute_task] {task_id} | role={role} "
+        f"| executor={executor_config['type']} "
+        f"| retry={state['current_retry']} | tier={tier}"
     )
 
-    # ... build command, invoke Aider, return results ...
+    # ... compose command, invoke executor via agent_bridge ...
 ```
 
-### `nodes/bootstrap.py`
+### `agent_bridge.py`
 
-Runs the tooling environment initialization command after the scaffold task.
-See `references/langgraph-patterns.md` § "Scaffold Tasks and Working Directory".
+Executor dispatch and subprocess wrappers. See `references/executor-integration.md`
+for the full implementation of each executor type.
 
-### `nodes/report.py`
+### Other Files
 
-Final summary with pass/fail/skip/degraded counts. Runs `GLOBAL_TEST_CMD`
-as a final sanity check.
-
-### `aider_bridge.py`
-
-Subprocess wrapper. Key functions: `get_task_working_dir()`, `rebase_path()`,
-`build_command()`, `run_aider()`, `run_verification()`,
-`detect_reflection_exhaustion()`. See `references/aider-integration.md` for
-the full implementation.
-
-### `run.py`
-
-Entry point with CLI argument parsing:
-
-```python
-"""Run the implementation pipeline.
-
-Usage:
-    python run.py                    # Run all tasks
-    python run.py --start task-05    # Resume from task-05
-    python run.py --model <string>   # Override the default model for all roles
-    python run.py --max-retries 5    # Override retry limit
-"""
-```
-
-Supports:
-- `--start <task-id>` — skip tasks before this ID (for resuming after fixes)
-- `--model <model-string>` — override the default model for all roles
-- `--max-retries <N>` — override retry limit
-
-No `--dry-run` flag. A dry-run that skips real execution creates false
-confidence. Phase 3 validates the pipeline through precondition checks instead.
-
-### `requirements.txt`
-
-```
-langgraph>=0.2.0
-pydantic>=2.0.0
-```
-
-### `README.md`
-
-Feature-specific README with prerequisites, run commands, config reference,
-and troubleshooting.
+- `graph.py` — See `references/langgraph-patterns.md`
+- `nodes/bootstrap.py` — Unchanged from previous version
+- `nodes/compose_prompt.py` — See `references/executor-integration.md` § "Prompt Composition"
+- `nodes/report.py` — Unchanged
+- `run.py` — Entry point with `--start` and `--max-retries` flags
+- `requirements.txt` — `langgraph>=0.2.0`, `pydantic>=2.0.0`
+- `README.md` — Feature-specific with executor configuration reference
 
 ## Generation Principles
 
@@ -408,17 +282,17 @@ and troubleshooting.
 - **Import the task schema, don't reinvent it.** Use `task_schema.py` from
   the tasks directory.
 
-- **Keep nodes focused.** One responsibility per node. Clean boundaries
-  enable escalation as a localized graph change.
+- **Serialize enums as strings.** Always use `model_dump(mode="json")` when
+  converting Pydantic models to dicts. Enum objects don't match string keys
+  in config lookups.
+
+- **Keep nodes focused.** One responsibility per node.
 
 - **Log everything.** Timestamped log file at
-  `pipelines/<feature>/logs/run-<timestamp>.log` with full Aider output,
-  verification results, and state transitions.
+  `pipelines/<feature>/logs/run-<timestamp>.log` with full executor output.
 
 - **Run without interruption.** Scaffold → bootstrap → execute is seamless.
-  The user starts the pipeline and walks away. Intervention is only needed
-  when tasks exhaust retries at all available model tiers.
+  Intervention only needed when tasks exhaust all executor tiers.
 
-- **Fail fast on configuration.** API keys, model availability, and tooling
-  commands are validated at startup, not when the first task that needs them
-  runs.
+- **Fail fast on configuration.** CLI availability, auth, and tooling commands
+  validated at startup.

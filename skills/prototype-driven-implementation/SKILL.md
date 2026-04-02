@@ -2,25 +2,27 @@
 name: prototype-driven-implementation
 description: >
   Generate a LangGraph-based implementation pipeline that executes task
-  decomposition output via Aider and configurable models. Use this skill when
-  the user has tasks.json from prototype-driven-task-decomposition and wants to
-  build the orchestration pipeline that feeds tasks to Aider. Trigger on phrases
-  like "build the pipeline", "generate the implementation pipeline", "create the
-  runner", "set up the LangGraph pipeline", or /prototype-implement. Also
-  trigger when the user mentions wanting to execute decomposed tasks with Aider,
-  local models, or LM Studio and has a tasks.json ready. Do NOT trigger when the
-  user wants to run tasks manually, wants to decompose a design doc (that's
-  prototype-driven-task-decomposition), or wants to plan a feature (that's
-  prototype-driven-planning).
+  decomposition output via configurable coding agent executors (Aider, Claude
+  CLI, Gemini CLI). Use this skill when the user has tasks.json from
+  prototype-driven-task-decomposition and wants to build the orchestration
+  pipeline that feeds tasks to coding agents. Trigger on phrases like "build the
+  pipeline", "generate the implementation pipeline", "create the runner", "set
+  up the LangGraph pipeline", or /prototype-implement. Also trigger when the
+  user mentions wanting to execute decomposed tasks with Aider, Claude Code,
+  Gemini CLI, local models, or LM Studio and has a tasks.json ready. Do NOT
+  trigger when the user wants to run tasks manually, wants to decompose a design
+  doc (that's prototype-driven-task-decomposition), or wants to plan a feature
+  (that's prototype-driven-planning).
 ---
 
 # Prototype-Driven Implementation
 
-Generate a LangGraph pipeline that executes decomposed tasks via Aider with
-configurable models per role. The pipeline reads `tasks.json`, feeds each task
-to Aider in dependency order, auto-fixes trivially fixable lint errors, verifies
-results with independent lint and test checks, and escalates to stronger models
-when weaker ones exhaust their retries.
+Generate a LangGraph pipeline that executes decomposed tasks via configurable
+coding agent executors. The pipeline reads `tasks.json`, dispatches each task
+to the appropriate executor (Aider, Claude CLI, or Gemini CLI) based on role
+assignments, auto-fixes trivially fixable lint errors, verifies results with
+independent lint and test checks, and escalates to stronger executors when
+weaker ones exhaust their retries.
 
 Claude Code generates the pipeline code. The user runs it independently.
 
@@ -76,23 +78,32 @@ Read `references/phase-1-analysis.md` for detailed guidance, then:
    If any task creates a project config file, determine the bootstrap command
    from the project's language and tooling.
 
-5. **Detect available models and propose role assignments.** Check LM Studio
-   for local models and environment variables for cloud API keys. Present
-   the detected models and propose assignments for three roles:
-   - `test` — benefits from a strong model (writes real assertions, not stubs)
-   - `implementation` — local model first, with optional cloud escalation
-   - `scaffold` — local model, no escalation needed
+5. **Detect available executors and propose role assignments.** Check what
+   coding agent CLIs are available and what models they can access:
+   - Check `aider --version` — if available, check LM Studio for local models
+     and note any API keys set for cloud model backends
+   - Check `claude --version` — if available, note it uses Pro plan auth
+     (no API key needed)
+   - Check `gemini --version` — if available, note auth method (Google
+     account or GEMINI_API_KEY)
 
-   Each role maps to an ordered list of models (the escalation chain).
+   Present the detected executors and propose assignments for three roles:
+   - `test` — benefits from a strong executor (writes real assertions, not stubs)
+   - `implementation` — local executor first, with optional escalation
+   - `scaffold` — any capable executor, no escalation needed
 
-6. **Check Aider availability.** Verify `aider` is on the PATH.
+   Each role maps to an ordered list of executor names (the escalation chain).
+
+6. **Verify executor availability.** For each executor that appears in any
+   role, verify it can actually run: CLI is on PATH, required auth is set,
+   local model server is reachable (for Aider+LM Studio).
 
 **STOP.** Present the analysis:
 - Task summary (count by phase and type)
 - Detected lint command, auto-fix command, and test runner
 - Bootstrap command and which task triggers it
 - Per-task test command derivations (so the user can verify)
-- Model configuration with role assignments (for user confirmation)
+- Executor configuration with role assignments (for user confirmation)
 - Any issues or ambiguities
 
 Wait for user confirmation before proceeding to Phase 2.
@@ -105,52 +116,52 @@ Read `references/phase-2-generation.md` for detailed guidance, then:
 
 2. **Generate the pipeline files.** Create each file in the pipeline directory.
    Read `references/langgraph-patterns.md` for the state machine design and
-   `references/aider-integration.md` for how to invoke Aider.
+   `references/executor-integration.md` for how to invoke each executor type.
 
    The files to generate:
-   - `run.py` — Entry point with CLI arguments (`--start`, `--model`)
-   - `config.py` — Models, role assignments, retry limits, paths, tooling
+   - `run.py` — Entry point with CLI arguments (`--start`, `--executor`)
+   - `config.py` — Executors, role assignments, retry limits, paths, tooling
    - `pipeline_state.py` — LangGraph TypedDict state definition
    - `graph.py` — StateGraph definition with nodes and edges
    - `nodes/__init__.py`
    - `nodes/load_tasks.py` — Reads and validates tasks.json, topological sort
-   - `nodes/compose_prompt.py` — Builds Aider message file from task definition
-   - `nodes/execute_task.py` — Invokes Aider via subprocess
+   - `nodes/compose_prompt.py` — Builds prompt content from task definition
+   - `nodes/execute_task.py` — Dispatches to the appropriate executor
    - `nodes/verify_task.py` — Auto-fix + independent lint/test verification
    - `nodes/report.py` — Final summary and results output
-   - `aider_bridge.py` — Subprocess wrapper for Aider CLI
+   - `agent_bridge.py` — Executor dispatch and subprocess wrappers
    - `requirements.txt` — Dependencies (langgraph, pydantic)
    - `README.md` — How to configure and run
 
 3. **Configure for this project.** The generated `config.py` should contain:
-   - `MODELS` dict — each model defined once with connection params
-   - `MODEL_ROLES` dict — user-confirmed role → model list mappings
+   - `EXECUTORS` dict — each named executor with its type and type-specific
+     params (Aider executors include model string and API config; Claude and
+     Gemini executors include optional model selection)
+   - `EXECUTOR_ROLES` dict — user-confirmed role → executor name list mappings
    - The detected lint command and lint auto-fix command
    - Paths to `tasks.json`, prototype directory, project root
-   - Retry limits (default: 3 per task per model tier)
+   - Retry limits (default: 3 per task per executor tier)
    - The per-task test command map (derived in Phase 1)
    - The scaffold bootstrap config (which task, what command)
    - Per-task working directory assignments
-   - Startup validation (`_resolve_api_keys()`) that fails fast if a
-     required cloud model's API key environment variable is not set
+   - Startup validation (`_validate_executors()`) that fails fast if a
+     required executor's CLI is not available or its auth is not configured
 
 4. **Generate the prompt composer.** The `compose_prompt.py` node turns a task's
-   JSON definition into a self-contained markdown message file for Aider. This
-   is where prototype references get resolved — read the referenced prototype
-   files and inline the relevant sections into the prompt. Additionally:
+   JSON definition into a self-contained markdown prompt. This is where
+   prototype references get resolved — read the referenced prototype files and
+   inline the relevant sections. Additionally:
    - **Inline dependency interfaces** — for each dependency task, read the
      current content of files it created and include the public interface
      (class names, method signatures, import paths) so the implementing model
      writes correct imports and call sites.
    - **Include import conventions** — state the project's import convention
-     (e.g., `from plugins.*` not `from services.*`) in the project context
-     block of every prompt.
+     in the project context block of every prompt.
    - **Test-task guidance** — for test-type tasks, include explicit rules
-     against `NotImplementedError` stubs in test bodies. Tests must contain
-     real assertions.
+     against `NotImplementedError` stubs in test bodies.
    - **Retry/escalation context** — on retries, include error output from
-     the previous attempt. On escalation, include context about the weaker
-     model's failure.
+     the previous attempt. On escalation, include context about the previous
+     executor's failure.
 
 **STOP.** Present a summary of generated files and their sizes. Highlight any
 decisions made during generation. Wait for user review.
@@ -165,17 +176,17 @@ Read `references/phase-3-handoff.md` for detailed guidance, then:
 2. **Precondition validation.** Verify the pipeline's configuration is
    consistent: all task IDs in test command maps exist in tasks.json, working
    directory paths are derivable, the service root prefix matches task file
-   paths, the bootstrap command is configured for the right task, all models
-   referenced in `MODEL_ROLES` exist in `MODELS`, and API key environment
-   variables are set for cloud models that appear in active roles.
+   paths, the bootstrap command is configured for the right task, all executor
+   names referenced in `EXECUTOR_ROLES` exist in `EXECUTORS`, and required
+   CLIs and auth are available for all active executors.
 
 3. **Present run instructions.** Tell the user:
-   - How to start LM Studio with the right model
-   - Which environment variables to set (for cloud models)
+   - Which executors need to be running (e.g., start LM Studio for Aider
+     executors)
+   - Which environment variables to set (if any)
    - How to install dependencies (`pip install -r requirements.txt`)
    - How to run the pipeline (`python run.py`)
    - How to resume from a specific task (`python run.py --start task-05`)
-   - How to use a different model (`python run.py --model <model-string>`)
    - Where logs and results are stored
 
 **STOP.** Present the handoff. The user takes over from here — they run the
@@ -188,50 +199,46 @@ pipeline, review results, and iterate as needed.
   Code or the devtools directory.
 
 - **Derive, don't require.** The pipeline figures out lint/test commands from
-  project config files and the design doc's Tooling section. It doesn't require
-  upstream skills to add new fields to their schemas — it reads what's already
-  there.
+  project config files and the design doc's Tooling section.
 
 - **Prototype is the tooling proof.** The planning skill validated that lint
   and tests work. The pipeline reads the same config files and constructs
   commands from them.
 
 - **Tasks are self-contained prompts.** The `compose_prompt.py` node transforms
-  each task's JSON into a markdown document that includes everything the
-  implementing model needs — description, file paths, inlined prototype
-  references, dependency interfaces, acceptance criteria. Aider receives this
-  as `--message-file`.
+  each task's JSON into a markdown document with everything the coding agent
+  needs. Different executors receive the prompt in their own format.
 
-- **Right model for the right job.** Test-writing tasks benefit from strong
-  models that produce real assertions. Implementation tasks work well with
-  local models constrained by pre-written tests. The `MODEL_ROLES` config
-  makes this assignment explicit and user-confirmed.
+- **Executors are coding agents, not models.** An executor is a CLI tool that
+  can read files, write code, and iterate (Aider, Claude CLI, Gemini CLI).
+  Each executor type has its own invocation conventions. A model is just a
+  parameter of certain executors. `EXECUTORS` defines each named executor
+  with its type and config; `EXECUTOR_ROLES` assigns them to task roles.
 
-- **Auto-fix before judgment.** After Aider exits, the pipeline runs the
-  linter's auto-fix command to resolve trivially fixable errors (import
-  sorting, unused imports). This prevents models from wasting reflection
-  cycles on mechanically fixable problems. The lint check runs after auto-fix.
+- **Right executor for the right job.** Test-writing tasks benefit from strong
+  executors that produce real assertions. Implementation tasks work well with
+  local executors constrained by pre-written tests. Role assignments are
+  user-confirmed, not hardcoded.
 
-- **Escalate, don't give up.** When a model exhausts its retries, the pipeline
-  escalates to the next model in the role's escalation chain before marking
-  the task as failed. Only tasks that exhaust all tiers are marked failed.
+- **Auto-fix before judgment.** After the executor exits, the pipeline runs
+  the linter's auto-fix command to resolve trivially fixable errors. The lint
+  check runs after auto-fix.
 
-- **Fail fast on configuration.** API keys, model availability, and tooling
-  commands are validated at pipeline startup. A missing `ANTHROPIC_API_KEY`
-  produces a clear error at launch, not a cryptic failure 20 tasks in.
+- **Escalate, don't give up.** When an executor exhausts its retries, the
+  pipeline escalates to the next executor in the role's chain before marking
+  the task as failed.
 
-- **Aider is the executor, not the orchestrator.** Aider runs in scripting
-  mode (`--message-file`, `--yes-always`, `--no-git`). The pipeline manages
-  state, retries, escalation, and verification. Aider just does the coding.
+- **Fail fast on configuration.** CLI availability, auth, and tooling commands
+  are validated at pipeline startup.
 
-- **Independent verification.** After Aider exits, the pipeline runs lint and
-  tests independently. Aider might silently give up (reflection exhaustion) —
-  the pipeline catches this.
+- **Independent verification.** After the executor exits, the pipeline runs
+  lint and tests independently. Executors might silently give up — the
+  pipeline catches this.
 
 - **Run without interruption.** The pipeline should execute all tasks from
   start to finish without manual intervention. Scaffold tasks trigger
   automatic bootstraps. The user should only need to intervene when a task
-  exhausts all model tiers.
+  exhausts all executor tiers.
 
 - **No dry-run divergence.** The pipeline does not have a `--dry-run` mode.
   Phase 3 validates through precondition checks and syntax verification instead.
