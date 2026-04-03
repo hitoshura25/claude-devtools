@@ -158,85 +158,154 @@ bootstrap step after that task:
 
 ## Executor Detection and Role Assignment
 
-### Detect Available Executors
+Executor detection has three sub-steps: discover which CLIs are installed,
+research their non-interactive invocation patterns, and verify each works
+with a test prompt. All three must pass before proceeding to Phase 2.
 
-Check which coding agent CLIs are available on the system:
+### Step 1: Discover Available CLIs
+
+Check which coding agent CLIs are on PATH:
 
 ```bash
-# Aider
 which aider && aider --version
-
-# Claude Code
 which claude && claude --version
-
-# Gemini CLI
 which gemini && gemini --version
 ```
 
-For Aider, also check what model backends are reachable:
+For Aider, also check model backends:
 
 ```bash
 # LM Studio local models
 curl -s http://localhost:1234/v1/models
 
-# Cloud API keys
+# Cloud API keys for Aider backends
 [ -n "$GEMINI_API_KEY" ] && echo "Gemini API key: set"
 [ -n "$ANTHROPIC_API_KEY" ] && echo "Anthropic API key: set"
-[ -n "$OPENAI_API_KEY" ] && echo "OpenAI API key: set"
 ```
 
-For Claude CLI, verify Pro plan auth works:
-```bash
-claude -p "hello" --max-turns 1 2>/dev/null && echo "Claude CLI: authenticated"
+### Step 2: Research Non-Interactive Invocation Patterns
+
+For each detected CLI (other than Aider, whose patterns are well-established),
+**search the web for the CLI's official documentation** on headless /
+non-interactive / print mode. This research determines the exact command
+the generated pipeline will use to invoke the executor.
+
+**Why research rather than hardcode:** CLI tools update their flags and
+conventions. Hardcoding patterns in the skill reference means they go stale.
+Researching the docs at pipeline-generation time ensures the generated
+`agent_bridge.py` uses the current, correct invocation.
+
+For each CLI, find answers to these questions:
+
+1. **Non-interactive flag**: What flag runs the CLI in non-interactive mode
+   where it processes a prompt and exits? (e.g., `-p`, `--print`, `--headless`)
+
+2. **Prompt delivery**: How is the prompt passed? As a positional argument,
+   via stdin, or via a file path flag? For long prompts (our task prompts are
+   often 2000+ chars), which method avoids shell argument length limits?
+
+3. **Tool permissions in headless mode**: In non-interactive mode, how does
+   the CLI handle tool approvals (file writes, shell commands)? What flags
+   are needed to pre-approve the tools the pipeline needs (file read, file
+   write/create, file edit, shell commands)? This is critical — if the CLI
+   prompts for permission in headless mode, the subprocess will hang.
+
+4. **Model selection**: How is a specific model variant selected?
+   (e.g., `--model opus`, `-m gemini-2.5-flash`)
+
+5. **Turn/iteration limits**: Is there a flag to limit the number of
+   autonomous turns? This prevents runaway loops.
+
+6. **Subprocess compatibility**: Are there known issues with the CLI when
+   spawned as a subprocess (e.g., stdin handling, TTY detection, hanging)?
+   Check the CLI's issue tracker and changelog for relevant fixes.
+
+**Search queries to use** (adapt to the specific CLI):
+
+- For Claude CLI: search for "claude code CLI headless mode" or "claude code
+  -p print mode documentation" and look at the official docs at
+  `code.claude.com/docs/en/headless`
+- For Gemini CLI: search for "gemini CLI headless mode" or "gemini CLI
+  non-interactive" and look at the official docs at
+  `google-gemini.github.io/gemini-cli/docs/cli/headless.html`
+
+Record the researched patterns. For each CLI, document:
+
+```
+Executor: claude
+  Non-interactive flag: <researched>
+  Prompt delivery: <researched — argument vs stdin vs file>
+  Tool permissions: <researched — exact flags needed for headless file/shell ops>
+  Model selection: <researched — flag and value format>
+  Turn limit: <researched — flag if available>
+  Known subprocess issues: <researched — any gotchas>
+  Full test command: <composed from above>
 ```
 
-For Gemini CLI, verify auth:
-```bash
-gemini -p "hello" --output-format json 2>/dev/null && echo "Gemini CLI: authenticated"
+### Step 3: Verify Executor Communication
+
+For each detected and researched CLI, run a minimal test prompt using the
+researched invocation pattern. This proves the command actually works as a
+subprocess before the pipeline is generated.
+
+The test prompt should be simple and quick:
+
+```
+Reply with exactly the word: OK
 ```
 
-### Propose Executor Configuration
+Run it using the full command pattern from Step 2 (including the tool
+permission flags, stdin piping, etc. — exactly as the pipeline would invoke
+it). Capture stdout, stderr, and return code.
 
-Present the detected executors and propose role assignments. The pipeline uses
-three roles:
+**Pass criteria:**
+- Return code is 0
+- stdout contains some response (doesn't need to be exactly "OK" — the point
+  is that the CLI processed the prompt and returned)
+- The command completes within 30 seconds (a hang means the permission
+  flags are wrong)
 
-- **test** — writes test files. Benefits from a strong executor that produces
-  real assertions and proper mock setups.
-- **implementation** — writes production code constrained by pre-written tests.
-  Local/cheap executors work well here.
-- **scaffold** — creates project structure, config files. Any capable executor.
+**If the test fails:**
+- Return code non-zero → check stderr for auth errors, model not found, etc.
+- Timeout/hang → the tool permission flags are likely wrong, research again
+  specifically for how to avoid permission prompts in non-interactive mode
+- Command not found → the CLI is not on PATH despite `which` succeeding
+  (possible venv issue)
 
-Each role maps to an ordered list of executor names (the escalation chain).
+Report the test result to the user and include the exact command that was
+tested. If it fails, stop and troubleshoot before proceeding.
 
-Present the proposal like this:
+### Step 4: Propose Executor Configuration
+
+Present the detected, researched, and verified executors with their invocation
+patterns and propose role assignments.
 
 ```
 ### Executor Configuration
 
-Detected executors:
+Detected and verified executors:
   aider-local-qwen:   aider + lm_studio/qwen/qwen3-coder-30b (localhost:1234)
-  claude:             claude CLI (Pro plan, authenticated)
-  gemini-flash:       gemini CLI + gemini-2.5-flash (GEMINI_API_KEY set)
+    Invocation: aider --message-file <prompt> --file <files...> [well-known]
+    Test: PASSED
+
+  claude:             claude CLI (Pro plan)
+    Invocation: <researched command pattern>
+    Test: PASSED (response received in Xs)
+
+  gemini-flash:       gemini CLI + gemini-2.5-flash
+    Invocation: <researched command pattern>
+    Test: PASSED (response received in Xs)
 
 Proposed role assignments:
-  test:           claude                            (strong executor for quality tests)
-  implementation: aider-local-qwen → claude          (local first, escalate if stuck)
-  scaffold:       claude                             (capable of large scaffold tasks)
+  test:           claude
+  implementation: aider-local-qwen → claude
+  scaffold:       claude
 
 Confirm these assignments, or adjust?
 ```
 
-If only Aider with a local model is available:
-
-```
-Proposed role assignments:
-  test:           aider-local-qwen                  (no other executors available)
-  implementation: aider-local-qwen                  (no escalation — single tier)
-  scaffold:       aider-local-qwen
-
-Note: Only one executor detected. Escalation is disabled.
-Install `claude` or `gemini` CLI to enable escalation.
-```
+The verified invocation patterns are stored in the executor config and used
+by Phase 2 to generate the `agent_bridge.py` command construction functions.
 
 ## Presentation
 
@@ -263,7 +332,7 @@ Present the analysis as a structured summary:
 - Bootstrap: `uv sync` (after task-01)
 
 ### Executor Configuration
-<proposed executor and role assignment — see above>
+<detected, researched, and verified executors with role assignments — see above>
 
 ### Per-Task Summary
 | Task ID | Type | Role | Executor (default) | Test Command | Verification |
@@ -274,9 +343,9 @@ Present the analysis as a structured summary:
 | ... | | | | | |
 
 ### Prerequisites
-- [✓/✗] Aider CLI installed
-- [✓/✗] Claude CLI installed and authenticated
-- [✓/✗] Gemini CLI installed and authenticated
+- [✓/✗] Aider CLI installed and verified
+- [✓/✗] Claude CLI installed, researched, and verified
+- [✓/✗] Gemini CLI installed, researched, and verified
 - [✓/✗] LM Studio reachable (if using Aider with local models)
 - [✓/✗] Lint command verified
 - [✓/✗] Lint auto-fix verified

@@ -8,8 +8,8 @@ its own conventions for receiving prompts, editing files, and producing output.
 | Type | CLI | Auth | File Editing | Prompt Input | Lint/Test Loop |
 |------|-----|------|-------------|-------------|----------------|
 | `aider` | `aider` | API key (LM Studio local, or cloud) | `--file` flags | `--message-file` | Built-in `--auto-lint`/`--auto-test` |
-| `claude` | `claude` | Pro plan (OAuth, no API key) | Built-in tools (Read, Write, Bash) | `-p` flag or stdin | No built-in; pipeline handles it |
-| `gemini` | `gemini` | Google account or `GEMINI_API_KEY` | Built-in tools (read_file, write_file, replace) | `-p` flag or stdin | No built-in; pipeline handles it |
+| `claude` | `claude` | Pro plan (OAuth, no API key) | Built-in tools | `-p` flag with stdin | No built-in; pipeline handles it |
+| `gemini` | `gemini` | Google account or `GEMINI_API_KEY` | Built-in tools | `-p` flag with stdin | No built-in; pipeline handles it |
 
 The `agent_bridge.py` module dispatches to the right executor based on the
 `type` field in the executor config.
@@ -37,47 +37,56 @@ Aider is model-agnostic — each Aider executor is named after the model it uses
 },
 ```
 
-### Claude Executors
+### Claude and Gemini Executors
 
-Claude CLI uses Pro plan auth — no API key needed. Different executors can
-select different Claude model tiers.
+Claude and Gemini executors store their invocation patterns as determined
+by Phase 1 research. The `invocation` field captures the verified command
+flags so `agent_bridge.py` can construct the correct subprocess call.
 
 ```python
 "claude": {
     "type": "claude",
-    # Uses default model (currently Sonnet)
+    "invocation": {
+        # These fields are populated from Phase 1 research
+        # of the CLI's official documentation.
+        "non_interactive_flag": "<researched>",
+        "tool_permissions_flags": ["<researched>"],
+        "model_flag": "<researched>",
+        "turn_limit_flag": "<researched>",
+        "prompt_delivery": "stdin",  # or "argument"
+    },
 },
 "claude-opus": {
     "type": "claude",
-    "model": "opus",  # Passed as --model flag
+    "model": "opus",
+    "invocation": { ... },  # Same structure, different model
 },
-```
-
-### Gemini Executors
-
-Gemini CLI uses Google account auth or `GEMINI_API_KEY`. Different executors
-can select different Gemini model tiers.
-
-```python
 "gemini": {
     "type": "gemini",
-    # Uses default model (currently gemini-2.5-pro)
+    "invocation": { ... },
 },
 "gemini-flash": {
     "type": "gemini",
-    "model": "gemini-2.5-flash",  # Passed as -m flag
+    "model": "gemini-2.5-flash",
+    "invocation": { ... },
 },
 ```
+
+The `invocation` block comes from Phase 1's research step (see
+`phase-1-analysis.md` § "Step 2: Research Non-Interactive Invocation Patterns").
+This ensures the pipeline uses the current, verified CLI flags rather than
+potentially stale hardcoded patterns.
 
 ## Command Construction Per Executor Type
 
 ### Aider
 
-Aider runs in scripting mode with explicit file paths.
+Aider's interface is well-established and stable. Its command construction
+is hardcoded:
 
 ```python
 def _build_aider_command(executor_config, task, prompt_path, lint_cmd,
-                         test_cmd, working_dir, extra_args):
+                         test_cmd, working_dir):
     cmd = ["aider", "--model", executor_config["model"]]
 
     if "api_base" in executor_config:
@@ -87,7 +96,6 @@ def _build_aider_command(executor_config, task, prompt_path, lint_cmd,
 
     cmd.extend(["--message-file", prompt_path])
 
-    # Files: rebased paths for non-scaffold tasks
     is_scaffold = task.get("phase") == "scaffold"
     for f in task.get("files", []):
         path = f["path"] if is_scaffold else rebase_path(f["path"], working_dir)
@@ -96,119 +104,99 @@ def _build_aider_command(executor_config, task, prompt_path, lint_cmd,
     if lint_cmd:
         cmd.extend(["--lint-cmd", lint_cmd, "--auto-lint"])
 
-    # --auto-test only for implementation tasks (test tasks should fail)
     if test_cmd and task.get("task_type") == "implementation":
         cmd.extend(["--test-cmd", test_cmd, "--auto-test"])
 
-    cmd.extend(extra_args)
+    cmd.extend(config.AIDER_EXTRA_ARGS)
     return cmd
 ```
 
-### Claude CLI
+### Claude and Gemini CLIs
 
-Claude CLI uses `-p` for non-interactive mode. It has built-in file editing
-tools — no `--file` flags needed. Instead, the prompt tells Claude which
-files to create/edit. The `--allowedTools` flag restricts what Claude can do.
+Command construction for Claude and Gemini executors is **generated from the
+invocation patterns discovered during Phase 1 research**. The generated
+`agent_bridge.py` builds commands using the researched flags stored in each
+executor's `invocation` config.
+
+The general pattern for both:
 
 ```python
-def _build_claude_command(executor_config, prompt_path, working_dir):
-    cmd = ["claude", "-p"]
+def _execute_cli_executor(executor_config, prompt_path, working_dir, log_file):
+    """Generic CLI executor for claude/gemini-type executors.
 
-    if "model" in executor_config:
-        cmd.extend(["--model", executor_config["model"]])
-
-    # Allow file operations and shell commands
-    cmd.extend(["--allowedTools", "Read,Write,Edit,Bash"])
-
-    # Read prompt from file and pass as argument
+    Builds the command from the researched invocation config, pipes the
+    prompt via stdin, and captures output.
+    """
+    invocation = executor_config["invocation"]
     prompt_content = Path(prompt_path).read_text(encoding="utf-8")
-    cmd.append(prompt_content)
 
-    return cmd
+    # Build command from researched flags
+    cmd = [executor_config["type"]]  # "claude" or "gemini"
+    cmd.append(invocation["non_interactive_flag"])
+    cmd.extend(invocation["tool_permissions_flags"])
+
+    if "model" in executor_config and invocation.get("model_flag"):
+        cmd.extend([invocation["model_flag"], executor_config["model"]])
+
+    if invocation.get("turn_limit_flag"):
+        cmd.extend([invocation["turn_limit_flag"], "30"])
+
+    env = _clean_env()
+
+    # Prompt is delivered via stdin to avoid shell argument length limits
+    result = subprocess.run(
+        cmd,
+        input=prompt_content,
+        cwd=working_dir,
+        capture_output=True, text=True,
+        timeout=config.EXECUTOR_TIMEOUT,
+        env=env,
+    )
+    return result.returncode, result.stdout, result.stderr
 ```
 
-**Important:** Claude CLI's `-p` mode accepts the prompt as a positional
-argument or via stdin. For long prompts (common in our case), pipe via stdin
-to avoid shell argument length limits:
-
-```python
-result = subprocess.run(
-    ["claude", "-p", "--allowedTools", "Read,Write,Edit,Bash"]
-    + (["--model", executor_config["model"]] if "model" in executor_config else []),
-    input=prompt_content,
-    cwd=working_dir,
-    capture_output=True, text=True, timeout=600, env=env,
-)
-```
-
-### Gemini CLI
-
-Gemini CLI uses `-p` for non-interactive mode. Like Claude, it has built-in
-file editing tools.
-
-```python
-def _build_gemini_command(executor_config, prompt_path, working_dir):
-    cmd = ["gemini", "-p"]
-
-    if "model" in executor_config:
-        cmd.extend(["-m", executor_config["model"]])
-
-    prompt_content = Path(prompt_path).read_text(encoding="utf-8")
-    # Gemini CLI accepts prompt as positional arg or via stdin
-    return cmd, prompt_content  # Pass prompt_content as stdin input
-```
+**Why not hardcode the flags here?** CLI tools update their flag syntax,
+permission models, and headless-mode behavior across versions. The Phase 1
+research step reads the current official documentation and verifies the
+pattern with a test prompt before the pipeline is generated. This means the
+generated `agent_bridge.py` always reflects the CLI's actual current interface.
 
 ## Executor Dispatch
 
-The `agent_bridge.py` module provides a unified interface for all executor types:
+The `agent_bridge.py` module provides a unified interface:
 
 ```python
 def execute(executor_config, task, prompt_path, lint_cmd, test_cmd,
-            working_dir, extra_args, log_file):
-    """Dispatch to the right executor based on type."""
+            working_dir, log_file):
     executor_type = executor_config["type"]
 
     if executor_type == "aider":
         return _execute_aider(executor_config, task, prompt_path, lint_cmd,
-                              test_cmd, working_dir, extra_args, log_file)
-    elif executor_type == "claude":
-        return _execute_claude(executor_config, task, prompt_path,
-                               working_dir, log_file)
-    elif executor_type == "gemini":
-        return _execute_gemini(executor_config, task, prompt_path,
-                               working_dir, log_file)
+                              test_cmd, working_dir, log_file)
+    elif executor_type in ("claude", "gemini"):
+        return _execute_cli_executor(executor_config, prompt_path,
+                                     working_dir, log_file)
     else:
         raise ValueError(f"Unknown executor type: {executor_type}")
 ```
 
 **Key difference:** For `claude` and `gemini` executors, lint/test commands are
-NOT passed to the executor (they don't have `--auto-lint`/`--auto-test`). The
-pipeline's `verify_task` node handles lint and test verification independently
-after any executor exits. Aider executors optionally use `--auto-lint` and
-`--auto-test` for their internal reflection loops, but `verify_task` always
-runs independently as the authoritative check.
+NOT passed to the executor. The pipeline's `verify_task` node handles lint and
+test verification independently after any executor exits. Aider executors
+optionally use `--auto-lint` and `--auto-test` for their internal reflection
+loops, but `verify_task` always runs independently as the authoritative check.
 
 ## Executor Resolution
 
-The `resolve_executor` function determines which executor to use for a given
-task based on its role and the current escalation tier:
-
 ```python
 def resolve_executor(task: dict, current_tier: int) -> tuple[dict, str]:
-    """Return (executor_config, role) for the given task and tier.
-
-    Role is determined from the task's type and phase:
-    - scaffold/infrastructure phase → "scaffold" role
-    - test type → "test" role
-    - implementation type → "implementation" role
-    """
     task_type = task.get("task_type", "implementation")
     phase = task.get("phase", "")
 
     if phase in ("scaffold", "infrastructure"):
         role = "scaffold"
     else:
-        role = task_type  # "test" or "implementation"
+        role = task_type
 
     executors_for_role = config.EXECUTOR_ROLES.get(
         role, config.EXECUTOR_ROLES["implementation"]
@@ -225,7 +213,7 @@ def resolve_executor(task: dict, current_tier: int) -> tuple[dict, str]:
 The `compose_prompt` node produces a markdown prompt that works with any
 executor type. The prompt content is identical regardless of executor — the
 only difference is how it's delivered (Aider reads from `--message-file`,
-Claude and Gemini receive it via stdin with `-p`).
+Claude and Gemini receive it via stdin).
 
 ### Prompt Template
 
@@ -307,8 +295,8 @@ For each dependency in `task.depends_on`:
 2. If those files exist on disk, read the public interface
 3. Include class names, method signatures, import paths in the Dependencies section
 
-**What to inline:** Class name, inheritance, method signatures with type annotations,
-module-level constants, import paths.
+**What to inline:** Class name, inheritance, method signatures with type
+annotations, module-level constants, import paths.
 
 **What NOT to inline:** Method bodies, private methods, test files.
 
@@ -364,7 +352,6 @@ All executors run as subprocesses with a clean environment:
 ```python
 def _clean_env():
     env = os.environ.copy()
-    # Strip pipeline's venv so service tooling resolves correctly
     for var in ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT"):
         env.pop(var, None)
     env.setdefault("OPENAI_API_KEY", "lm-studio")
@@ -400,16 +387,3 @@ def run_verification(cmd, working_dir, timeout=120):
     )
     return result.returncode, result.stdout, result.stderr
 ```
-
-## Startup Validation
-
-For each executor that appears in any `EXECUTOR_ROLES` chain:
-
-| Executor type | Validation |
-|--------------|------------|
-| `aider` | `which aider`, check `api_key_env` if present, check `api_base` reachability for local models |
-| `claude` | `which claude`, verify auth works (`claude -p "hello" --max-turns 1`) |
-| `gemini` | `which gemini`, verify auth works (`gemini -p "hello" --output-format json`) |
-
-Fail fast at pipeline startup with a clear error message if any active
-executor is not available.
